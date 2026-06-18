@@ -66,6 +66,13 @@ Deploy → Health Check → Prometheus Metrics → Argo Rollouts → Rollback
 │   ├── requirements.txt
 │   ├── Dockerfile
 │   └── deployment.yaml
+├── compose/                    # Docker Compose config and tooling
+│   ├── prometheus.yml          # Prometheus scrape config
+│   ├── alerts.yml              # Alert rules
+│   ├── alertmanager.yml        # AlertManager routing
+│   ├── grafana-datasource.yml
+│   ├── grafana-dashboard-provider.yml
+│   └── generate-traffic.sh    # Live traffic generator with dashboard status
 └── scripts/
     ├── install.sh              # Install all dependencies (Helm, Argo Rollouts)
     ├── deploy.sh               # Build → push → canary deploy
@@ -77,7 +84,10 @@ Deploy → Health Check → Prometheus Metrics → Argo Rollouts → Rollback
 
 ## Quick Start
 
-### Prerequisites
+> **Docker Compose (no Kubernetes needed):** see [DOCKER-DEPLOY.md](DOCKER-DEPLOY.md)
+> **Cloud VM from scratch:** see [CLOUD-DEPLOY.md](CLOUD-DEPLOY.md)
+
+### Prerequisites (Kubernetes path)
 - Kubernetes cluster (kind / minikube / EKS / GKE)
 - `kubectl`, `helm`, `docker`
 

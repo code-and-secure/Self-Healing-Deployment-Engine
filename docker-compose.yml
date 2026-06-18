@@ -47,8 +47,8 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ./local/prometheus.yml:/etc/prometheus/prometheus.yml
-      - ./local/alerts.yml:/etc/prometheus/alerts.yml
+      - ./compose/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./compose/alerts.yml:/etc/prometheus/alerts.yml
       - prometheus-data:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
@@ -70,9 +70,9 @@ services:
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - grafana-data:/var/lib/grafana
-      - ./local/grafana-datasource.yml:/etc/grafana/provisioning/datasources/prometheus.yml
+      - ./compose/grafana-datasource.yml:/etc/grafana/provisioning/datasources/prometheus.yml
       - ./monitoring/grafana/dashboard.json:/etc/grafana/provisioning/dashboards/self-healing.json
-      - ./local/grafana-dashboard-provider.yml:/etc/grafana/provisioning/dashboards/provider.yml
+      - ./compose/grafana-dashboard-provider.yml:/etc/grafana/provisioning/dashboards/provider.yml
     depends_on:
       - prometheus
     restart: unless-stopped
@@ -86,7 +86,7 @@ services:
     ports:
       - "9093:9093"
     volumes:
-      - ./local/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+      - ./compose/alertmanager.yml:/etc/alertmanager/alertmanager.yml
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
     restart: unless-stopped
