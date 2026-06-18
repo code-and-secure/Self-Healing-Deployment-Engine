@@ -1,0 +1,79 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: error-rate-analysis
+  namespace: self-healing
+spec:
+  args:
+    - name: service-name
+  metrics:
+    # ── Error rate gate ───────────────────────────────────────────────────
+    - name: error-rate
+      interval: 30s
+      count: 5           # Run 5 measurements; all must pass
+      failureLimit: 1    # Abort after 1 failure
+      successCondition: result[0] < 0.05   # <5% error rate
+      failureCondition: result[0] >= 0.20  # Abort immediately at >=20%
+      provider:
+        prometheus:
+          address: http://prometheus.self-healing:9090
+          query: |
+            sum(rate(http_requests_total{status_code=~"5..",job="{{args.service-name}}"}[2m]))
+            /
+            sum(rate(http_requests_total{job="{{args.service-name}}"}[2m]))
+
+    # ── P99 latency gate ──────────────────────────────────────────────────
+    - name: p99-latency
+      interval: 30s
+      count: 5
+      failureLimit: 1
+      successCondition: result[0] < 1.0   # <1 s
+      provider:
+        prometheus:
+          address: http://prometheus.self-healing:9090
+          query: |
+            histogram_quantile(0.99,
+              sum(rate(http_request_duration_seconds_bucket{job="{{args.service-name}}"}[5m]))
+              by (le)
+            )
+
+    # ── Availability gate ─────────────────────────────────────────────────
+    - name: availability
+      interval: 30s
+      count: 5
+      failureLimit: 0    # Zero tolerance for availability failures
+      successCondition: result[0] == 1
+      provider:
+        prometheus:
+          address: http://prometheus.self-healing:9090
+          query: |
+            min(app_availability{job="{{args.service-name}}"})
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: smoke-test
+  namespace: self-healing
+spec:
+  metrics:
+    - name: smoke-test-job
+      provider:
+        job:
+          spec:
+            backoffLimit: 0
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: smoke-test
+                    image: curlimages/curl:8.7.1
+                    command:
+                      - sh
+                      - -c
+                      - |
+                        set -e
+                        echo "Running smoke tests..."
+                        curl -sf http://healing-app.self-healing/healthz
+                        curl -sf http://healing-app.self-healing/readyz
+                        curl -sf http://healing-app.self-healing/api/data
+                        echo "All smoke tests passed"

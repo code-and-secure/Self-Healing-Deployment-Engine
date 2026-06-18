@@ -1,0 +1,231 @@
+{
+  "__inputs": [
+    { "name": "DS_PROMETHEUS", "label": "Prometheus", "type": "datasource", "pluginId": "prometheus" }
+  ],
+  "title": "Self-Healing Deployment Engine",
+  "uid": "self-healing-main",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "tags": ["self-healing", "kubernetes", "argo-rollouts"],
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Deployment Score",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "targets": [{
+        "expr": "anomaly_detector_feature{feature=\"availability\"} * 100",
+        "legendFormat": "Score"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 60 },
+              { "color": "green", "value": 90 }
+            ]
+          },
+          "mappings": [],
+          "min": 0, "max": 100
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Error Rate",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "targets": [{
+        "expr": "sum(rate(http_requests_total{status_code=~\"5..\"}[2m])) / sum(rate(http_requests_total[2m]))",
+        "legendFormat": "Error Rate"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.02 },
+              { "color": "red", "value": 0.05 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "P99 Latency",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "targets": [{
+        "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+        "legendFormat": "P99"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.5 },
+              { "color": "red", "value": 1.0 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Anomaly Score",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "targets": [{
+        "expr": "anomaly_detector_score",
+        "legendFormat": "Score"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": -0.15 },
+              { "color": "green", "value": 0 }
+            ]
+          },
+          "min": -1, "max": 1
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Availability",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "targets": [{
+        "expr": "min(app_availability)",
+        "legendFormat": "Available"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Auto Remediations",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "targets": [{
+        "expr": "sum(auto_remediation_total)",
+        "legendFormat": "Total"
+      }],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "HTTP Error Rate",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{status_code=~\"5..\"}[2m])) / sum(rate(http_requests_total[2m]))",
+          "legendFormat": "Error Rate"
+        },
+        {
+          "expr": "0.05",
+          "legendFormat": "Warning Threshold (5%)"
+        },
+        {
+          "expr": "0.20",
+          "legendFormat": "Critical Threshold (20%)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "custom": { "lineWidth": 2 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Warning Threshold (5%)" }, "properties": [{ "id": "custom.lineStyle", "value": { "dash": [10, 10], "fill": "dash" } }, { "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } }] },
+          { "matcher": { "id": "byName", "options": "Critical Threshold (20%)" }, "properties": [{ "id": "custom.lineStyle", "value": { "dash": [10, 10], "fill": "dash" } }, { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Request Latency Percentiles",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))", "legendFormat": "P50" },
+        { "expr": "histogram_quantile(0.90, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))", "legendFormat": "P90" },
+        { "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))", "legendFormat": "P99" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Request Throughput",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [
+        { "expr": "sum(rate(http_requests_total{status_code=~\"2..\"}[2m]))", "legendFormat": "2xx Success" },
+        { "expr": "sum(rate(http_requests_total{status_code=~\"4..\"}[2m]))", "legendFormat": "4xx Client Error" },
+        { "expr": "sum(rate(http_requests_total{status_code=~\"5..\"}[2m]))", "legendFormat": "5xx Server Error" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "ML Anomaly Detection",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        { "expr": "anomaly_detector_score", "legendFormat": "Anomaly Score" },
+        { "expr": "anomaly_detected", "legendFormat": "Anomaly Detected (0/1)" },
+        { "expr": "-0.15 + (anomaly_detected * 0)", "legendFormat": "Threshold" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "min": -1, "max": 1 },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Anomaly Detected (0/1)" }, "properties": [{ "id": "custom.fillOpacity", "value": 20 }, { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
+        ]
+      }
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Pod Count by State",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "targets": [
+        { "expr": "kube_deployment_status_available_replicas{namespace=\"self-healing\",deployment=\"healing-app\"}", "legendFormat": "Available" },
+        { "expr": "kube_deployment_status_ready_replicas{namespace=\"self-healing\",deployment=\"healing-app\"}", "legendFormat": "Ready" },
+        { "expr": "kube_deployment_spec_replicas{namespace=\"self-healing\",deployment=\"healing-app\"}", "legendFormat": "Desired" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Auto-Remediation Actions",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "targets": [
+        { "expr": "increase(auto_remediation_total{action=\"rollback\"}[5m])", "legendFormat": "Rollbacks" },
+        { "expr": "increase(auto_remediation_total{action=\"abort_rollout\"}[5m])", "legendFormat": "Aborted Rollouts" },
+        { "expr": "increase(auto_remediation_total{action=\"scale_up\"}[5m])", "legendFormat": "Scale-Ups" },
+        { "expr": "increase(auto_remediation_total{action=\"restart_pods\"}[5m])", "legendFormat": "Pod Restarts" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    }
+  ]
+}

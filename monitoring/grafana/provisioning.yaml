@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-self-healing
+  namespace: self-healing
+  labels:
+    grafana_dashboard: "1"    # Picked up by the Grafana sidecar
+data:
+  self-healing.json: |
+    # Contents of dashboard.json are injected here at deploy time.
+    # Use: kubectl create configmap grafana-dashboard-self-healing \
+    #        --from-file=self-healing.json=monitoring/grafana/dashboard.json \
+    #        -n self-healing --dry-run=client -o yaml | kubectl apply -f -

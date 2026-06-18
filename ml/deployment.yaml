@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anomaly-detector
+  namespace: self-healing
+  labels:
+    app: anomaly-detector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: anomaly-detector
+  template:
+    metadata:
+      labels:
+        app: anomaly-detector
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8090"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: anomaly-detector
+          image: anomaly-detector:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8090
+              name: http
+          env:
+            - name: PROMETHEUS_URL
+              value: "http://prometheus.self-healing:9090"
+            - name: ROLLOUT_API
+              value: "http://argo-rollouts-dashboard.argo-rollouts:3100"
+            - name: SCRAPE_INTERVAL
+              value: "30"
+            - name: ANOMALY_THRESHOLD
+              value: "-0.15"
+            - name: WARMUP_SAMPLES
+              value: "20"
+            - name: MODEL_PATH
+              value: "/models/isolation_forest.pkl"
+          volumeMounts:
+            - name: models
+              mountPath: /models
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: 8090
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: anomaly-detector-models
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: anomaly-detector-models
+  namespace: self-healing
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: anomaly-detector
+  namespace: self-healing
+spec:
+  selector:
+    app: anomaly-detector
+  ports:
+    - name: http
+      port: 8090
+      targetPort: 8090

@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: self-healing
+  labels:
+    name: self-healing
+    monitoring: "true"

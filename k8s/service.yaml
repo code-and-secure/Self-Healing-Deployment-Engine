@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: healing-app
+  namespace: self-healing
+  labels:
+    app: healing-app
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+spec:
+  selector:
+    app: healing-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: healing-app-nodeport
+  namespace: self-healing
+spec:
+  selector:
+    app: healing-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      nodePort: 30080
+  type: NodePort
+---
+# PodDisruptionBudget: at least 2 pods available during voluntary disruptions
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: healing-app-pdb
+  namespace: self-healing
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: healing-app
