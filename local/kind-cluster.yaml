@@ -1,0 +1,23 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: self-healing
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      - containerPort: 30080   # healing-app NodePort
+        hostPort: 8080
+        protocol: TCP
+      - containerPort: 30090   # Prometheus NodePort
+        hostPort: 9090
+        protocol: TCP
+      - containerPort: 30000   # Grafana NodePort
+        hostPort: 3000
+        protocol: TCP
+  - role: worker
+  - role: worker
