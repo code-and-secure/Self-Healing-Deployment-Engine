@@ -115,7 +115,13 @@ class AnomalyDetector:
         return None
 
     def collect_sample(self) -> Optional[MetricSample]:
-        queries = {
+        # Required metrics — sample is skipped if these are missing
+        required_queries = {
+            "availability": 'min(app_availability)',
+        }
+        # Optional metrics — fall back to 0.0 when unavailable (e.g. Docker Compose
+        # has no cAdvisor, so we use process-level metrics exported by prometheus-client)
+        optional_queries = {
             "error_rate": (
                 'sum(rate(http_requests_total{status_code=~"5.."}[2m])) / '
                 'sum(rate(http_requests_total[2m]))'
@@ -124,23 +130,27 @@ class AnomalyDetector:
                 'histogram_quantile(0.99, sum(rate('
                 'http_request_duration_seconds_bucket[5m])) by (le))'
             ),
-            "availability": 'min(app_availability)',
+            # Works in both Docker Compose and Kubernetes
             "cpu_usage": (
-                'sum(rate(container_cpu_usage_seconds_total{'
-                'namespace="self-healing",container="healing-app"}[5m]))'
+                'sum(rate(process_cpu_seconds_total{job="healing-app"}[5m])) or '
+                'sum(rate(container_cpu_usage_seconds_total{container="healing-app"}[5m]))'
             ),
             "memory_usage": (
-                'container_memory_working_set_bytes{'
-                'namespace="self-healing",container="healing-app"}'
+                'sum(process_resident_memory_bytes{job="healing-app"}) or '
+                'sum(container_memory_working_set_bytes{container="healing-app"})'
             ),
             "active_connections": 'sum(app_active_connections)',
         }
-        values = {k: self._query_prometheus(q) for k, q in queries.items()}
-        if any(v is None for v in values.values()):
-            logger.warning("Incomplete metrics — skipping sample")
+
+        required_values = {k: self._query_prometheus(q) for k, q in required_queries.items()}
+        if any(v is None for v in required_values.values()):
+            logger.warning("Required metric unavailable — skipping sample: %s",
+                           [k for k, v in required_values.items() if v is None])
             return None
 
-        return MetricSample(timestamp=time.time(), **{k: v or 0.0 for k, v in values.items()})
+        optional_values = {k: (self._query_prometheus(q) or 0.0) for k, q in optional_queries.items()}
+
+        return MetricSample(timestamp=time.time(), **required_values, **optional_values)
 
     def _feature_vector(self, sample: MetricSample) -> np.ndarray:
         return np.array([

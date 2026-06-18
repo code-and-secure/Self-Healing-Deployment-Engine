@@ -16,7 +16,7 @@
       "title": "Deployment Score",
       "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
       "targets": [{
-        "expr": "anomaly_detector_feature{feature=\"availability\"} * 100",
+        "expr": "min(app_availability) * 100",
         "legendFormat": "Score"
       }],
       "fieldConfig": {
