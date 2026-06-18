@@ -333,7 +333,10 @@ def _detection_loop():
         time.sleep(SCRAPE_INTERVAL)
 
 
+# Start the detection loop regardless of how this module is loaded
+# (works under both `python anomaly_detector.py` and gunicorn)
+_detection_thread = threading.Thread(target=_detection_loop, daemon=True)
+_detection_thread.start()
+
 if __name__ == "__main__":
-    t = threading.Thread(target=_detection_loop, daemon=True)
-    t.start()
     app.run(host="0.0.0.0", port=8090, debug=False)

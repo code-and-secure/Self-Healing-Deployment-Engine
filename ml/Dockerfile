@@ -17,4 +17,4 @@ EXPOSE 8090
 
 VOLUME ["/models"]
 
-CMD ["gunicorn", "--workers=1", "--bind=0.0.0.0:8090", "--timeout=60", "anomaly_detector:app"]
+CMD ["python", "anomaly_detector.py"]
