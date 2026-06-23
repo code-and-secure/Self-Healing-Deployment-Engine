@@ -13,10 +13,61 @@ env:
   SERVER_IP: 18.143.224.244
 
 jobs:
+  # ── Job 0: Bootstrap server (runs only if k3s is not installed yet) ─────────
+  bootstrap-server:
+    name: Bootstrap Server (one-time)
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Add server SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ env.SERVER_IP }} >> ~/.ssh/known_hosts
+
+      - name: Check if k3s is already installed on server
+        id: check_k3s
+        run: |
+          INSTALLED=$(ssh -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=no \
+            ${{ secrets.SERVER_USER }}@${{ env.SERVER_IP }} \
+            "command -v k3s &>/dev/null && echo yes || echo no")
+          echo "installed=${INSTALLED}" >> $GITHUB_OUTPUT
+
+      - name: Clone repo and run server-setup.sh (first time only)
+        if: steps.check_k3s.outputs.installed == 'no'
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=no \
+            ${{ secrets.SERVER_USER }}@${{ env.SERVER_IP }} \
+            bash -s << 'ENDSSH'
+              set -euo pipefail
+              REPO_URL="https://github.com/${{ github.repository }}"
+              REPO_DIR="$HOME/$(basename "$REPO_URL" .git)"
+
+              echo "==> Cloning repo..."
+              rm -rf "$REPO_DIR"
+              git clone "$REPO_URL" "$REPO_DIR"
+              cd "$REPO_DIR"
+
+              echo "==> Running server-setup.sh..."
+              bash scripts/server-setup.sh "$REPO_URL"
+          ENDSSH
+
+      - name: Server already bootstrapped — skipping
+        if: steps.check_k3s.outputs.installed == 'yes'
+        run: echo "k3s already installed on ${{ env.SERVER_IP }} — skipping bootstrap"
+
   # ── Job 1: Build & push Docker images ──────────────────────────────────────
   build-and-push:
     name: Build & Push Images
     runs-on: ubuntu-latest
+    needs: bootstrap-server
     permissions:
       contents: read
       packages: write
