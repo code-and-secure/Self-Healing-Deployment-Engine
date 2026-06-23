@@ -1,0 +1,78 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: self-healing-engine
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/YOUR_ORG/YOUR_REPO   # TODO: replace before running server-setup.sh
+    targetRevision: main
+    path: .
+    directory:
+      recurse: true
+      include: >-
+        {k8s/*.yaml,
+         argo-rollouts/*.yaml,
+         ml/deployment.yaml}
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: self-healing
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true          # Re-sync if someone manually edits the cluster
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+
+  ignoreDifferences:
+    # HPA manages replica count — ignore diffs so ArgoCD doesn't fight HPA
+    - group: apps
+      kind: Deployment
+      jsonPointers: [/spec/replicas]
+    - group: argoproj.io
+      kind: Rollout
+      jsonPointers: [/spec/replicas]
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: self-healing-monitoring
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/YOUR_ORG/YOUR_REPO   # TODO: replace before running server-setup.sh
+    targetRevision: main
+    path: .
+    directory:
+      recurse: true
+      include: >-
+        {monitoring/**/*.yaml,
+         alertmanager/alertmanager.yaml}
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: self-healing
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

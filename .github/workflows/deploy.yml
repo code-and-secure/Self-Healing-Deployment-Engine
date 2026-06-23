@@ -1,0 +1,186 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_APP: ghcr.io/${{ github.repository }}/healing-app
+  IMAGE_ML:  ghcr.io/${{ github.repository }}/anomaly-detector
+  SERVER_IP: 18.143.224.244
+
+jobs:
+  # ── Job 1: Build & push Docker images ──────────────────────────────────────
+  build-and-push:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_tag: ${{ github.sha }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push healing-app
+        uses: docker/build-push-action@v5
+        with:
+          context: ./app
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: |
+            ${{ env.IMAGE_APP }}:${{ github.sha }}
+            ${{ env.IMAGE_APP }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & push anomaly-detector
+        uses: docker/build-push-action@v5
+        with:
+          context: ./ml
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: |
+            ${{ env.IMAGE_ML }}:${{ github.sha }}
+            ${{ env.IMAGE_ML }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Job 2: Update image tags in manifests ──────────────────────────────────
+  # Only runs on push to main (not PRs)
+  update-manifests:
+    name: Update Image Tags in Manifests
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update healing-app image tag
+        run: |
+          NEW_IMAGE="${{ env.IMAGE_APP }}:${{ github.sha }}"
+          # k8s/deployment.yaml — used for initial bootstrap
+          sed -i "s|image: .*healing-app.*|image: ${NEW_IMAGE}|g" k8s/deployment.yaml
+          # argo-rollouts/rollout.yaml — used for all canary deployments
+          sed -i "s|image: .*healing-app.*|image: ${NEW_IMAGE}|g" argo-rollouts/rollout.yaml
+
+      - name: Update anomaly-detector image tag
+        run: |
+          NEW_IMAGE="${{ env.IMAGE_ML }}:${{ github.sha }}"
+          sed -i "s|image: .*anomaly-detector.*|image: ${NEW_IMAGE}|g" ml/deployment.yaml
+
+      - name: Commit and push updated manifests
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add k8s/deployment.yaml argo-rollouts/rollout.yaml ml/deployment.yaml
+          git diff --cached --quiet || git commit -m "ci: bump image tags to ${{ github.sha }}"
+          git push
+
+  # ── Job 3: Trigger ArgoCD sync on 18.143.224.244 ──────────────────────────
+  # ArgoCD polls git every 3 min by default; this forces an immediate sync.
+  sync-argocd:
+    name: Trigger ArgoCD Sync
+    runs-on: ubuntu-latest
+    needs: update-manifests
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Install argocd CLI
+        run: |
+          curl -sSL -o /usr/local/bin/argocd \
+            https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          chmod +x /usr/local/bin/argocd
+
+      - name: Sync self-healing-engine app
+        env:
+          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}   # 18.143.224.244:30080
+          ARGOCD_TOKEN:  ${{ secrets.ARGOCD_TOKEN }}
+        run: |
+          argocd app sync self-healing-engine \
+            --server  "${ARGOCD_SERVER}" \
+            --auth-token "${ARGOCD_TOKEN}" \
+            --insecure \
+            --timeout 120
+
+      - name: Sync self-healing-monitoring app
+        env:
+          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+          ARGOCD_TOKEN:  ${{ secrets.ARGOCD_TOKEN }}
+        run: |
+          argocd app sync self-healing-monitoring \
+            --server  "${ARGOCD_SERVER}" \
+            --auth-token "${ARGOCD_TOKEN}" \
+            --insecure \
+            --timeout 60
+
+      - name: Wait for ArgoCD sync to complete
+        env:
+          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+          ARGOCD_TOKEN:  ${{ secrets.ARGOCD_TOKEN }}
+        run: |
+          argocd app wait self-healing-engine \
+            --server    "${ARGOCD_SERVER}" \
+            --auth-token "${ARGOCD_TOKEN}" \
+            --insecure \
+            --health \
+            --timeout 300
+          echo "ArgoCD sync complete — Argo Rollouts canary is now running on ${{ env.SERVER_IP }}"
+
+  # ── Job 4: Watch rollout progress ──────────────────────────────────────────
+  watch-rollout:
+    name: Monitor Canary Rollout
+    runs-on: ubuntu-latest
+    needs: sync-argocd
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Install kubectl + argo rollouts plugin
+        run: |
+          curl -sLO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+          curl -sLo /usr/local/bin/kubectl-argo-rollouts \
+            https://github.com/argoproj/argo-rollouts/releases/download/v1.7.2/kubectl-argo-rollouts-linux-amd64
+          chmod +x /usr/local/bin/kubectl-argo-rollouts
+
+      - name: Configure kubectl to talk to 18.143.224.244
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}   # base64-encoded kubeconfig
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "${KUBECONFIG_B64}" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+
+      - name: Watch rollout (5% → 20% → 50% → 80% → 100%)
+        run: |
+          kubectl argo rollouts status healing-app \
+            -n self-healing \
+            --timeout 15m \
+            --watch || {
+              STATUS=$(kubectl argo rollouts get rollout healing-app \
+                -n self-healing -o jsonpath='{.status.phase}')
+              echo "Rollout ended with status: ${STATUS}"
+              if [[ "$STATUS" == "Degraded" || "$STATUS" == "Error" ]]; then
+                echo "Rollout FAILED — auto-rollback has fired on the server"
+                exit 1
+              fi
+            }
