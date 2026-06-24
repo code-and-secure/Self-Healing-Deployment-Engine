@@ -30,7 +30,7 @@ spec:
     - name: http
       port: 80
       targetPort: 8080
-      nodePort: 30080
+      nodePort: 30090
   type: NodePort
 ---
 # PodDisruptionBudget: at least 2 pods available during voluntary disruptions
