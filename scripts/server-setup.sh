@@ -25,15 +25,16 @@ curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server \
   --tls-san ${SERVER_IP} \
   --write-kubeconfig-mode 644" sh -
 
-# Make kubeconfig available to current user
+# Make kubeconfig available to current user — keep 127.0.0.1 for local use
+# (replacing with external IP causes i/o timeout when port 6443 is firewalled)
 mkdir -p "$HOME/.kube"
 sudo cp /etc/rancher/k3s/k3s.yaml "$HOME/.kube/config"
 sudo chown "$(id -u):$(id -g)" "$HOME/.kube/config"
-# Fix the server address in kubeconfig (k3s writes 127.0.0.1 by default)
-sed -i "s|127.0.0.1|${SERVER_IP}|g" "$HOME/.kube/config"
 export KUBECONFIG="$HOME/.kube/config"
 
 log "Waiting for k3s node to be Ready..."
+# Poll via local socket — avoids needing port 6443 open externally
+until kubectl get node &>/dev/null; do sleep 3; done
 kubectl wait node --all --for=condition=Ready --timeout=120s
 log "k3s ready: $(kubectl get node -o wide)"
 
@@ -147,4 +148,10 @@ log "GitHub Secrets to set (Settings > Secrets > Actions):"
 log "  ARGOCD_SERVER   = ${SERVER_IP}:30080"
 log "  ARGOCD_PASSWORD = ${ARGOCD_PASSWORD}"
 log "  ARGOCD_TOKEN    = (shown above)"
+log ""
+log "  KUBECONFIG_B64  = (copy the line below — it is the base64 kubeconfig"
+log "                     with external IP so GitHub Actions can reach k3s)"
+# Generate a remote kubeconfig pointing to the external IP for GitHub Actions
+sed "s|127.0.0.1|${SERVER_IP}|g" "$HOME/.kube/config" | base64 -w0
+echo ""
 log "================================================================"
