@@ -60,7 +60,7 @@ log "Nginx Ingress ready"
 # ── Step 4: Install ArgoCD ───────────────────────────────────────────────────
 log "==> [4/8] Installing ArgoCD..."
 kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+kubectl apply -n argocd --server-side -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 kubectl rollout status deployment/argocd-server -n argocd --timeout=180s
 
 # Expose ArgoCD via NodePort on port 30080 so GitHub Actions can reach it
