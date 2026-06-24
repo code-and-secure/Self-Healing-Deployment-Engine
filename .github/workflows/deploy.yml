@@ -10,7 +10,7 @@ env:
   REGISTRY: ghcr.io
   IMAGE_APP: ghcr.io/code-and-secure/self-healing-deployment-engine/healing-app
   IMAGE_ML:  ghcr.io/code-and-secure/self-healing-deployment-engine/anomaly-detector
-  SERVER_IP: 18.143.224.244
+  SERVER_IP: 52.231.65.235
 
 jobs:
   # ── Job 0: Bootstrap server (runs only if k3s is not installed yet) ─────────

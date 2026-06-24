@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# server-setup.sh — Run this ONCE on 18.143.224.244 to bootstrap everything.
+# server-setup.sh — Run this ONCE on 52.231.65.235 to bootstrap everything.
 #
 # Usage:
-#   ssh user@18.143.224.244
+#   ssh user@52.231.65.235
 #   git clone https://github.com/YOUR_ORG/YOUR_REPO
 #   cd YOUR_REPO
 #   bash scripts/server-setup.sh https://github.com/YOUR_ORG/YOUR_REPO
@@ -10,7 +10,7 @@
 set -euo pipefail
 
 REPO_URL="${1:?Usage: server-setup.sh <github-repo-url>}"
-SERVER_IP="18.143.224.244"
+SERVER_IP="52.231.65.235"
 NAMESPACE="self-healing"
 
 log()  { echo "[$(date +%H:%M:%S)] INFO  $*"; }
