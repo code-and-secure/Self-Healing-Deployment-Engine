@@ -166,7 +166,9 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             ${{ secrets.SERVER_USER }}@${{ env.SERVER_IP }} \
-            "argocd app sync self-healing-engine --insecure --timeout 120 && \
+            "argocd app terminate-op self-healing-engine --insecure 2>/dev/null || true && \
+             argocd app terminate-op self-healing-monitoring --insecure 2>/dev/null || true && \
+             argocd app sync self-healing-engine --insecure --timeout 120 && \
              argocd app sync self-healing-monitoring --insecure --timeout 60 && \
              argocd app wait self-healing-engine --insecure --health --timeout 300 && \
              echo 'ArgoCD sync complete'"
