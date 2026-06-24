@@ -4,7 +4,7 @@ set -euo pipefail
 
 NAMESPACE="self-healing"
 ARGO_ROLLOUTS_VERSION="v1.7.2"
-PROMETHEUS_CHART_VERSION="25.21.0"
+PROMETHEUS_CHART_VERSION="87.1.0"
 
 log()  { echo "[$(date +%H:%M:%S)] INFO  $*"; }
 warn() { echo "[$(date +%H:%M:%S)] WARN  $*" >&2; }
@@ -16,7 +16,6 @@ require() { command -v "$1" &>/dev/null || die "Required tool not found: $1"; }
 log "Checking required tools..."
 require kubectl
 require helm
-require docker
 
 KUBE_VERSION=$(kubectl version --client -o json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['clientVersion']['minor'])" 2>/dev/null || echo "0")
 [[ "$KUBE_VERSION" -ge 24 ]] || warn "kubectl < 1.24 detected — some features may not work"
@@ -41,26 +40,6 @@ helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheu
   --set prometheus.prometheusSpec.retention=15d \
   --set alertmanager.enabled=true \
   --wait --timeout 5m
-
-# ── Argo Rollouts ─────────────────────────────────────────────────────────
-log "Installing Argo Rollouts ${ARGO_ROLLOUTS_VERSION}..."
-kubectl create namespace argo-rollouts --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -n argo-rollouts \
-  -f "https://github.com/argoproj/argo-rollouts/releases/download/${ARGO_ROLLOUTS_VERSION}/install.yaml"
-
-log "Waiting for Argo Rollouts controller..."
-kubectl -n argo-rollouts rollout status deployment/argo-rollouts --timeout=3m
-
-# Install kubectl Argo Rollouts plugin
-if ! command -v kubectl-argo-rollouts &>/dev/null; then
-  log "Installing kubectl-argo-rollouts plugin..."
-  OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-  ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
-  curl -sLo /usr/local/bin/kubectl-argo-rollouts \
-    "https://github.com/argoproj/argo-rollouts/releases/download/${ARGO_ROLLOUTS_VERSION}/kubectl-argo-rollouts-${OS}-${ARCH}"
-  chmod +x /usr/local/bin/kubectl-argo-rollouts
-  log "Plugin installed: $(kubectl-argo-rollouts version)"
-fi
 
 # ── Custom Prometheus rules and AlertManager ──────────────────────────────
 log "Applying Prometheus alert rules..."
