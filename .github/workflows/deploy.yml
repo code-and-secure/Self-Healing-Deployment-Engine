@@ -8,8 +8,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_APP: ghcr.io/${{ github.repository }}/healing-app
-  IMAGE_ML:  ghcr.io/${{ github.repository }}/anomaly-detector
+  IMAGE_APP: ghcr.io/code-and-secure/self-healing-deployment-engine/healing-app
+  IMAGE_ML:  ghcr.io/code-and-secure/self-healing-deployment-engine/anomaly-detector
   SERVER_IP: 18.143.224.244
 
 jobs:
