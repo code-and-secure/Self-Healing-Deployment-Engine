@@ -21,7 +21,7 @@ spec:
     spec:
       containers:
         - name: anomaly-detector
-          image: ghcr.io/code-and-secure/self-healing-deployment-engine/anomaly-detector:74f22fde7d75cff70f830fc74e9b4b6932958d61
+          image: ghcr.io/code-and-secure/self-healing-deployment-engine/anomaly-detector:4d29aed9d4f9909a137c393d909ed25fed65a6e9
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8090
