@@ -36,7 +36,7 @@ jobs:
           INSTALLED=$(ssh -i ~/.ssh/deploy_key \
             -o StrictHostKeyChecking=no \
             ${{ secrets.SERVER_USER }}@${{ env.SERVER_IP }} \
-            "command -v k3s &>/dev/null && echo yes || echo no")
+            "command -v k3s &>/dev/null && kubectl get ns argocd &>/dev/null 2>&1 && echo yes || echo no")
           echo "installed=${INSTALLED}" >> $GITHUB_OUTPUT
 
       - name: Clone repo and run server-setup.sh (first time only)
@@ -147,8 +147,7 @@ jobs:
           git diff --cached --quiet || git commit -m "ci: bump image tags to ${{ github.sha }}"
           git push
 
-  # ── Job 3: Trigger ArgoCD sync on 18.143.224.244 ──────────────────────────
-  # ArgoCD polls git every 3 min by default; this forces an immediate sync.
+  # ── Job 3: Trigger ArgoCD sync via SSH ────────────────────────────────────
   sync-argocd:
     name: Trigger ArgoCD Sync
     runs-on: ubuntu-latest
@@ -156,48 +155,23 @@ jobs:
     if: github.ref == 'refs/heads/main'
 
     steps:
-      - name: Install argocd CLI
+      - name: Add server SSH key
         run: |
-          curl -sSL -o /usr/local/bin/argocd \
-            https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
-          chmod +x /usr/local/bin/argocd
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ env.SERVER_IP }} >> ~/.ssh/known_hosts
 
-      - name: Sync self-healing-engine app
-        env:
-          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}   # 18.143.224.244:30080
-          ARGOCD_TOKEN:  ${{ secrets.ARGOCD_TOKEN }}
+      - name: Sync ArgoCD apps on server
         run: |
-          argocd app sync self-healing-engine \
-            --server  "${ARGOCD_SERVER}" \
-            --auth-token "${ARGOCD_TOKEN}" \
-            --insecure \
-            --timeout 120
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.SERVER_USER }}@${{ env.SERVER_IP }} \
+            "argocd app sync self-healing-engine --insecure --timeout 120 && \
+             argocd app sync self-healing-monitoring --insecure --timeout 60 && \
+             argocd app wait self-healing-engine --insecure --health --timeout 300 && \
+             echo 'ArgoCD sync complete'"
 
-      - name: Sync self-healing-monitoring app
-        env:
-          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
-          ARGOCD_TOKEN:  ${{ secrets.ARGOCD_TOKEN }}
-        run: |
-          argocd app sync self-healing-monitoring \
-            --server  "${ARGOCD_SERVER}" \
-            --auth-token "${ARGOCD_TOKEN}" \
-            --insecure \
-            --timeout 60
-
-      - name: Wait for ArgoCD sync to complete
-        env:
-          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
-          ARGOCD_TOKEN:  ${{ secrets.ARGOCD_TOKEN }}
-        run: |
-          argocd app wait self-healing-engine \
-            --server    "${ARGOCD_SERVER}" \
-            --auth-token "${ARGOCD_TOKEN}" \
-            --insecure \
-            --health \
-            --timeout 300
-          echo "ArgoCD sync complete — Argo Rollouts canary is now running on ${{ env.SERVER_IP }}"
-
-  # ── Job 4: Watch rollout progress ──────────────────────────────────────────
+  # ── Job 4: Watch rollout progress via SSH ──────────────────────────────────
   watch-rollout:
     name: Monitor Canary Rollout
     runs-on: ubuntu-latest
@@ -205,33 +179,18 @@ jobs:
     if: github.ref == 'refs/heads/main'
 
     steps:
-      - name: Install kubectl + argo rollouts plugin
+      - name: Add server SSH key
         run: |
-          curl -sLO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
-          curl -sLo /usr/local/bin/kubectl-argo-rollouts \
-            https://github.com/argoproj/argo-rollouts/releases/download/v1.7.2/kubectl-argo-rollouts-linux-amd64
-          chmod +x /usr/local/bin/kubectl-argo-rollouts
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ env.SERVER_IP }} >> ~/.ssh/known_hosts
 
-      - name: Configure kubectl to talk to 18.143.224.244
-        env:
-          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}   # base64-encoded kubeconfig
+      - name: Watch rollout on server
         run: |
-          mkdir -p "$HOME/.kube"
-          echo "${KUBECONFIG_B64}" | base64 -d > "$HOME/.kube/config"
-          chmod 600 "$HOME/.kube/config"
-
-      - name: Watch rollout (5% → 20% → 50% → 80% → 100%)
-        run: |
-          kubectl argo rollouts status healing-app \
-            -n self-healing \
-            --timeout 15m \
-            --watch || {
-              STATUS=$(kubectl argo rollouts get rollout healing-app \
-                -n self-healing -o jsonpath='{.status.phase}')
-              echo "Rollout ended with status: ${STATUS}"
-              if [[ "$STATUS" == "Degraded" || "$STATUS" == "Error" ]]; then
-                echo "Rollout FAILED — auto-rollback has fired on the server"
-                exit 1
-              fi
-            }
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.SERVER_USER }}@${{ env.SERVER_IP }} \
+            "kubectl argo rollouts status healing-app -n self-healing --timeout 15m --watch || \
+             { STATUS=\$(kubectl argo rollouts get rollout healing-app -n self-healing -o jsonpath='{.status.phase}'); \
+               echo \"Rollout ended: \${STATUS}\"; \
+               [[ \"\${STATUS}\" == 'Degraded' || \"\${STATUS}\" == 'Error' ]] && exit 1 || exit 0; }"
