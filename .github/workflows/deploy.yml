@@ -36,7 +36,7 @@ jobs:
           INSTALLED=$(ssh -i ~/.ssh/deploy_key \
             -o StrictHostKeyChecking=no \
             ${{ secrets.SERVER_USER }}@${{ env.SERVER_IP }} \
-            "command -v k3s &>/dev/null && kubectl get ns argocd &>/dev/null 2>&1 && echo yes || echo no")
+            "command -v k3s &>/dev/null && command -v argocd &>/dev/null && echo yes || echo no")
           echo "installed=${INSTALLED}" >> $GITHUB_OUTPUT
 
       - name: Clone repo and run server-setup.sh (first time only)
