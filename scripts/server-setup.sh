@@ -90,9 +90,9 @@ kubectl rollout status deployment/argo-rollouts -n argo-rollouts --timeout=120s
 # kubectl plugin
 if ! command -v kubectl-argo-rollouts &>/dev/null; then
   ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
-  curl -sLo /usr/local/bin/kubectl-argo-rollouts \
+  sudo curl -sLo /usr/local/bin/kubectl-argo-rollouts \
     "https://github.com/argoproj/argo-rollouts/releases/download/v1.7.2/kubectl-argo-rollouts-linux-${ARCH}"
-  chmod +x /usr/local/bin/kubectl-argo-rollouts
+  sudo chmod +x /usr/local/bin/kubectl-argo-rollouts
 fi
 log "Argo Rollouts ready"
 
@@ -104,9 +104,9 @@ bash "$(dirname "$0")/install.sh"
 log "==> [7/8] Creating ArgoCD API token..."
 # Install argocd CLI
 if ! command -v argocd &>/dev/null; then
-  curl -sSL -o /usr/local/bin/argocd \
+  sudo curl -sSL -o /usr/local/bin/argocd \
     https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
-  chmod +x /usr/local/bin/argocd
+  sudo chmod +x /usr/local/bin/argocd
 fi
 
 # Login and create a token
