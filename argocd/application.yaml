@@ -41,7 +41,12 @@ spec:
       jsonPointers: [/spec/replicas]
     - group: argoproj.io
       kind: Rollout
-      jsonPointers: [/spec/replicas]
+      jsonPointers:
+        - /spec/replicas
+        # bool zero-value + omitempty means git's explicit `false` is
+        # indistinguishable from unset once serialized, causing perpetual
+        # OutOfSync against the live object even though both are `false`
+        - /spec/strategy/canary/autoPromotionEnabled
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
