@@ -106,58 +106,21 @@ spec:
       autoPromotionEnabled: false    # Require all analysis gates to pass
 
       steps:
-        # Step 1: Send 5% traffic to canary, run smoke test
-        - setWeight: 5
+        # Step 1: Send 20% traffic to canary, run smoke test
+        - setWeight: 20
         - analysis:
             templates:
               - templateName: smoke-test
         - pause:
+            duration: 1m
+
+        # Step 2: 50% traffic
+        - setWeight: 50
+        - pause:
             duration: 2m
 
-        # Step 2: 20% traffic — first real metrics gate
-        - setWeight: 20
-        - analysis:
-            templates:
-              - templateName: error-rate-analysis
-            args:
-              - name: service-name
-                value: healing-app
-        - pause:
-            duration: 3m
-
-        # Step 3: 50% traffic — midpoint gate
-        - setWeight: 50
-        - analysis:
-            templates:
-              - templateName: error-rate-analysis
-            args:
-              - name: service-name
-                value: healing-app
-        - pause:
-            duration: 5m
-
-        # Step 4: 80% traffic — near-full gate
-        - setWeight: 80
-        - analysis:
-            templates:
-              - templateName: error-rate-analysis
-            args:
-              - name: service-name
-                value: healing-app
-        - pause:
-            duration: 5m
-
-        # Step 5: 100% — full promotion (Argo promotes automatically on success)
+        # Step 3: 100% — full promotion
         - setWeight: 100
-
-      # Background analysis runs throughout all steps
-      analysis:
-        templates:
-          - templateName: error-rate-analysis
-        args:
-          - name: service-name
-            value: healing-app
-        startingStep: 2     # Begin background analysis from step 2 onward
 ---
 # Stable service receives all traffic initially
 apiVersion: v1
