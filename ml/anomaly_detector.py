@@ -13,7 +13,7 @@ import logging
 import threading
 import requests
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
@@ -24,6 +24,9 @@ from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 import joblib
 
+from kubernetes import client as k8s_client, config as k8s_config
+from kubernetes.client.rest import ApiException
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -31,11 +34,28 @@ logging.basicConfig(
 logger = logging.getLogger("anomaly-detector")
 
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus.self-healing:9090")
-ROLLOUT_API = os.getenv("ROLLOUT_API", "http://argo-rollouts.self-healing:3100")
 SCRAPE_INTERVAL = int(os.getenv("SCRAPE_INTERVAL", "30"))
 ANOMALY_THRESHOLD = float(os.getenv("ANOMALY_THRESHOLD", "-0.15"))
 MODEL_PATH = os.getenv("MODEL_PATH", "/models/isolation_forest.pkl")
 WARMUP_SAMPLES = int(os.getenv("WARMUP_SAMPLES", "20"))
+
+# ── Kubernetes API client for driving the Rollout directly ─────────────────
+# The Argo Rollouts dashboard only serves its gRPC-Web UI backend, not a
+# plain REST API, so remediation patches the Rollout custom resource
+# directly instead (the same mechanism `kubectl argo rollouts` itself uses).
+ROLLOUT_NAMESPACE = os.getenv("ROLLOUT_NAMESPACE", "self-healing")
+ROLLOUT_NAME = os.getenv("ROLLOUT_NAME", "healing-app")
+ROLLOUT_GROUP = "argoproj.io"
+ROLLOUT_VERSION = "v1alpha1"
+ROLLOUT_PLURAL = "rollouts"
+
+try:
+    k8s_config.load_incluster_config()
+except k8s_config.ConfigException:
+    k8s_config.load_kube_config()
+
+custom_api = k8s_client.CustomObjectsApi()
+apps_api = k8s_client.AppsV1Api()
 
 # ── Detector metrics exposed to Prometheus ─────────────────────────────────
 ANOMALY_SCORE = Gauge("anomaly_detector_score", "Current anomaly score (-1 to 1, lower = more anomalous)")
@@ -236,52 +256,66 @@ class AnomalyDetector:
     def _rollback(self):
         logger.critical("Triggering AUTO-ROLLBACK")
         try:
-            resp = requests.post(
-                f"{ROLLOUT_API}/api/v1/namespaces/self-healing/rollouts/healing-app/rollback",
-                json={"revision": 0},   # 0 = previous stable revision
-                timeout=10,
+            rollout = custom_api.get_namespaced_custom_object(
+                ROLLOUT_GROUP, ROLLOUT_VERSION, ROLLOUT_NAMESPACE, ROLLOUT_PLURAL, ROLLOUT_NAME,
             )
-            resp.raise_for_status()
+            stable_hash = rollout.get("status", {}).get("stableRS")
+            if not stable_hash:
+                logger.error("Rollback failed: no stable revision recorded yet")
+                return
+
+            replica_sets = apps_api.list_namespaced_replica_set(
+                ROLLOUT_NAMESPACE,
+                label_selector=f"rollouts-pod-template-hash={stable_hash}",
+            )
+            if not replica_sets.items:
+                logger.error("Rollback failed: stable ReplicaSet %s not found", stable_hash)
+                return
+
+            stable_template = k8s_client.ApiClient().sanitize_for_serialization(
+                replica_sets.items[0].spec.template
+            )
+            custom_api.patch_namespaced_custom_object(
+                ROLLOUT_GROUP, ROLLOUT_VERSION, ROLLOUT_NAMESPACE, ROLLOUT_PLURAL, ROLLOUT_NAME,
+                {"spec": {"template": stable_template}},
+            )
             REMEDIATION_TOTAL.labels(action="rollback").inc()
-            logger.info("Rollback initiated: %s", resp.json())
-        except Exception as exc:
+            logger.info("Rollback initiated to stable revision %s", stable_hash)
+        except ApiException as exc:
             logger.error("Rollback failed: %s", exc)
 
     def _abort_rollout(self):
         logger.warning("Aborting active rollout due to high error rate")
         try:
-            resp = requests.put(
-                f"{ROLLOUT_API}/api/v1/namespaces/self-healing/rollouts/healing-app/abort",
-                timeout=10,
+            custom_api.patch_namespaced_custom_object_status(
+                ROLLOUT_GROUP, ROLLOUT_VERSION, ROLLOUT_NAMESPACE, ROLLOUT_PLURAL, ROLLOUT_NAME,
+                {"status": {"abort": True}},
             )
-            resp.raise_for_status()
             REMEDIATION_TOTAL.labels(action="abort_rollout").inc()
-        except Exception as exc:
+        except ApiException as exc:
             logger.error("Abort failed: %s", exc)
 
     def _scale_up(self):
         logger.warning("Scaling up healing-app to handle latency spike")
         try:
-            resp = requests.patch(
-                f"{ROLLOUT_API}/api/v1/namespaces/self-healing/rollouts/healing-app/scale",
-                json={"spec": {"replicas": 6}},
-                timeout=10,
+            custom_api.patch_namespaced_custom_object(
+                ROLLOUT_GROUP, ROLLOUT_VERSION, ROLLOUT_NAMESPACE, ROLLOUT_PLURAL, ROLLOUT_NAME,
+                {"spec": {"replicas": 6}},
             )
-            resp.raise_for_status()
             REMEDIATION_TOTAL.labels(action="scale_up").inc()
-        except Exception as exc:
+        except ApiException as exc:
             logger.error("Scale-up failed: %s", exc)
 
     def _restart_unhealthy_pods(self):
         logger.warning("Requesting restart of unhealthy pods via Argo Rollouts")
         try:
-            resp = requests.put(
-                f"{ROLLOUT_API}/api/v1/namespaces/self-healing/rollouts/healing-app/restart",
-                timeout=10,
+            restart_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            custom_api.patch_namespaced_custom_object(
+                ROLLOUT_GROUP, ROLLOUT_VERSION, ROLLOUT_NAMESPACE, ROLLOUT_PLURAL, ROLLOUT_NAME,
+                {"spec": {"restartAt": restart_at}},
             )
-            resp.raise_for_status()
             REMEDIATION_TOTAL.labels(action="restart_pods").inc()
-        except Exception as exc:
+        except ApiException as exc:
             logger.error("Restart failed: %s", exc)
 
 
