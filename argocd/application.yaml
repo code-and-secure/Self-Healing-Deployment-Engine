@@ -14,7 +14,7 @@ spec:
     path: .
     directory:
       recurse: true
-      include: "{k8s/*.yaml,argo-rollouts/*.yaml,ml/deployment.yaml}"
+      include: "{k8s/namespace.yaml,k8s/service.yaml,k8s/hpa.yaml,argo-rollouts/*.yaml,ml/deployment.yaml}"
 
   destination:
     server: https://kubernetes.default.svc
