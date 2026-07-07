@@ -170,6 +170,13 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H ${{ env.SERVER_IP }} >> ~/.ssh/known_hosts
 
+      - name: Refresh repo checkout on server
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.SERVER_USER }}@${{ env.SERVER_IP }} \
+            "REPO_DIR=\"\$HOME/$(basename '${{ github.repository }}')\" && \
+             cd \"\$REPO_DIR\" && git fetch origin main && git checkout main && git pull --ff-only origin main"
+
       - name: Sync ArgoCD apps on server
         run: |
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
