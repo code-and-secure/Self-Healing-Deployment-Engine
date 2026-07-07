@@ -14,10 +14,7 @@ spec:
     path: .
     directory:
       recurse: true
-      include: >-
-        {k8s/*.yaml,
-         argo-rollouts/*.yaml,
-         ml/deployment.yaml}
+      include: "{k8s/*.yaml,argo-rollouts/*.yaml,ml/deployment.yaml}"
 
   destination:
     server: https://kubernetes.default.svc
@@ -62,9 +59,7 @@ spec:
     path: .
     directory:
       recurse: true
-      include: >-
-        {monitoring/**/*.yaml,
-         alertmanager/alertmanager.yaml}
+      include: "{monitoring/**/*.yaml,alertmanager/alertmanager.yaml}"
 
   destination:
     server: https://kubernetes.default.svc
