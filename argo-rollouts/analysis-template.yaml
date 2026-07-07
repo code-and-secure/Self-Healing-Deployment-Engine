@@ -18,9 +18,9 @@ spec:
         prometheus:
           address: http://prometheus.self-healing:9090
           query: |
-            sum(rate(http_requests_total{status_code=~"5..",job="{{args.service-name}}"}[2m]))
+            (sum(rate(http_requests_total{status_code=~"5..",job="{{args.service-name}}"}[2m])) OR on() vector(0))
             /
-            sum(rate(http_requests_total{job="{{args.service-name}}"}[2m]))
+            (sum(rate(http_requests_total{job="{{args.service-name}}"}[2m])) OR on() vector(1))
 
     # ── P99 latency gate ──────────────────────────────────────────────────
     - name: p99-latency
@@ -35,7 +35,7 @@ spec:
             histogram_quantile(0.99,
               sum(rate(http_request_duration_seconds_bucket{job="{{args.service-name}}"}[5m]))
               by (le)
-            )
+            ) OR on() vector(0)
 
     # ── Availability gate ─────────────────────────────────────────────────
     - name: availability
@@ -47,7 +47,7 @@ spec:
         prometheus:
           address: http://prometheus.self-healing:9090
           query: |
-            min(app_availability{job="{{args.service-name}}"})
+            min(app_availability{job="{{args.service-name}}"}) OR on() vector(0)
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: AnalysisTemplate
