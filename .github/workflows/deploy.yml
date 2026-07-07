@@ -181,8 +181,15 @@ jobs:
             "export ARGOCD_SERVER='${{ env.SERVER_IP }}:30080' ARGOCD_AUTH_TOKEN='${{ secrets.ARGOCD_AUTH_TOKEN }}' ARGOCD_INSECURE=true && \
              argocd app terminate-op self-healing-engine 2>/dev/null || true && \
              argocd app terminate-op self-healing-monitoring 2>/dev/null || true && \
-             argocd app sync self-healing-engine --timeout 120 && \
-             argocd app sync self-healing-monitoring --timeout 60 && \
+             sleep 5 && \
+             ( for i in 1 2 3 4 5; do \
+                 argocd app sync self-healing-engine --timeout 120 && exit 0; \
+                 echo \"self-healing-engine sync busy, retrying (attempt \$i)...\"; sleep 10; \
+               done; exit 1 ) && \
+             ( for i in 1 2 3 4 5; do \
+                 argocd app sync self-healing-monitoring --timeout 60 && exit 0; \
+                 echo \"self-healing-monitoring sync busy, retrying (attempt \$i)...\"; sleep 10; \
+               done; exit 1 ) && \
              argocd app wait self-healing-engine --health --timeout 300 && \
              echo 'ArgoCD sync complete'"
 
