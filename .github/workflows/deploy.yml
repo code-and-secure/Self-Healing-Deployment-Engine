@@ -193,6 +193,6 @@ jobs:
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             ${{ secrets.SERVER_USER }}@${{ env.SERVER_IP }} \
             "kubectl argo rollouts status healing-app -n self-healing --timeout 15m --watch || \
-             { STATUS=\$(kubectl argo rollouts get rollout healing-app -n self-healing -o jsonpath='{.status.phase}'); \
-               echo \"Rollout ended: \${STATUS}\"; \
-               [[ \"\${STATUS}\" == 'Degraded' || \"\${STATUS}\" == 'Error' ]] && exit 1 || exit 0; }"
+             { STATUS=\$(kubectl get rollout healing-app -n self-healing -o jsonpath='{.status.phase}' 2>/dev/null); \
+               echo \"Rollout ended: \${STATUS:-NotFound}\"; \
+               [[ \"\${STATUS}\" == 'Healthy' ]] && exit 0 || exit 1; }"
