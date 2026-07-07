@@ -28,7 +28,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: healing-app
-          image: ghcr.io/code-and-secure/self-healing-deployment-engine/healing-app:32806b12e4362f59ad7f9c3f77f1f0a8234d1e86
+          image: ghcr.io/code-and-secure/self-healing-deployment-engine/healing-app:6f688752b719df6421bc790a116b004021eb61a3
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
