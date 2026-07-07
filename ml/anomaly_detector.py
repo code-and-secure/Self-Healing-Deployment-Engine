@@ -38,6 +38,7 @@ SCRAPE_INTERVAL = int(os.getenv("SCRAPE_INTERVAL", "30"))
 ANOMALY_THRESHOLD = float(os.getenv("ANOMALY_THRESHOLD", "-0.15"))
 MODEL_PATH = os.getenv("MODEL_PATH", "/models/isolation_forest.pkl")
 WARMUP_SAMPLES = int(os.getenv("WARMUP_SAMPLES", "20"))
+REMEDIATION_COOLDOWN = int(os.getenv("REMEDIATION_COOLDOWN", "300"))
 
 # ── Kubernetes API client for driving the Rollout directly ─────────────────
 # The Argo Rollouts dashboard only serves its gRPC-Web UI backend, not a
@@ -99,6 +100,7 @@ class AnomalyDetector:
         self.scaler = StandardScaler()
         self.history: deque[MetricSample] = deque(maxlen=1000)
         self.scorer = DeploymentScorer()
+        self._last_remediation_at = 0.0
         self._load_or_init_model()
 
     def _load_or_init_model(self):
@@ -243,6 +245,15 @@ class AnomalyDetector:
 
     def _trigger_remediation(self, sample: MetricSample, deployment_score: float):
         logger.warning("ANOMALY DETECTED — score=%.3f deployment_score=%.1f", sample.anomaly_score, deployment_score)
+
+        elapsed = time.time() - self._last_remediation_at
+        if elapsed < REMEDIATION_COOLDOWN:
+            logger.info(
+                "Skipping remediation — %.0fs into %ds cooldown from last action",
+                elapsed, REMEDIATION_COOLDOWN,
+            )
+            return
+        self._last_remediation_at = time.time()
 
         if deployment_score < 30:
             self._rollback()

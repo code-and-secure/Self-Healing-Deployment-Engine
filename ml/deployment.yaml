@@ -69,6 +69,8 @@ spec:
               value: "-0.15"
             - name: WARMUP_SAMPLES
               value: "20"
+            - name: REMEDIATION_COOLDOWN
+              value: "300"
             - name: MODEL_PATH
               value: "/models/isolation_forest.pkl"
           volumeMounts:
