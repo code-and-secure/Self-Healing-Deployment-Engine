@@ -33,14 +33,16 @@ spec:
       nodePort: 30090
   type: NodePort
 ---
-# PodDisruptionBudget: at least 2 pods available during voluntary disruptions
+# PodDisruptionBudget: allow at most 1 pod down during voluntary disruptions.
+# minAvailable equal to the replica count (e.g. 2 of 2 at HPA's minReplicas)
+# makes the disruption budget zero, permanently blocking rollout restarts.
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: healing-app-pdb
   namespace: self-healing
 spec:
-  minAvailable: 2
+  maxUnavailable: 1
   selector:
     matchLabels:
       app: healing-app
