@@ -39,7 +39,7 @@ Two deployment targets are supported:
 - **[CLOUD-DEPLOY.md](CLOUD-DEPLOY.md)** — the real thing: a cloud VM running k3s + ArgoCD + Argo Rollouts, driven by the GitHub Actions pipeline above. This is what's actually deployed and tested.
 - **[LOCAL-DEPLOY.md](LOCAL-DEPLOY.md)** — run it on your own machine, either via Docker Compose (app + monitoring only, no canary/remediation) or `kind` (mirrors the cloud architecture exactly, no cloud VM needed).
 
-For the day-to-day commands you'll actually use once it's running, see **[COMMANDS.md](COMMANDS.md)**.
+For the day-to-day commands you'll actually use once it's running, see **[COMMANDS.md](COMMANDS.md)**. If something breaks, check **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** — every real issue hit while building this, with root cause and fix.
 
 ---
 

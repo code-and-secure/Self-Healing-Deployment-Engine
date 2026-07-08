@@ -1,6 +1,6 @@
 # Useful Commands
 
-A reference of the commands you'll actually reach for, grouped by what you're trying to do, with **why** you'd run each one. For full setup steps see [LOCAL-DEPLOY.md](LOCAL-DEPLOY.md) or [CLOUD-DEPLOY.md](CLOUD-DEPLOY.md).
+A reference of the commands you'll actually reach for, grouped by what you're trying to do, with **why** you'd run each one. For full setup steps see [LOCAL-DEPLOY.md](LOCAL-DEPLOY.md) or [CLOUD-DEPLOY.md](CLOUD-DEPLOY.md). If something's actually broken, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 All Kubernetes commands below assume the cloud/kind path (namespace `self-healing`); Docker Compose equivalents are noted where relevant.
 

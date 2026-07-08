@@ -240,16 +240,20 @@ See [COMMANDS.md](COMMANDS.md) for the full command reference with what each one
 
 ## Troubleshooting
 
-Real issues hit while building this out, and their causes — in case any of these come back:
+Quick-glance symptoms — see **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** for the full cause + fix + verification for each of these (plus how to get/reset the ArgoCD admin password):
 
-| Symptom | Cause |
+| Symptom | Details |
 |---|---|
-| `git fetch`/`git pull` on the server fails with `Permission denied` | The checkout is owned by a different user than `SERVER_USER` (usually because someone `sudo su`'d and did manual work as root). Fix: `sudo chown -R <ci-user>:<ci-user> ~/Self-Healing-Deployment-Engine` |
-| ArgoCD sync fails: `invalid session: token has invalid claims: token is expired` | The pipeline was relying on a cached interactive CLI login session instead of the non-expiring `ARGOCD_AUTH_TOKEN`. Make sure that secret is actually set. |
-| `argocd account generate-token` fails: `account 'admin' does not have apiKey capability` | Run: `kubectl -n argocd patch configmap argocd-cm --type merge -p '{"data":{"accounts.admin":"apiKey,login"}}'` then restart `argocd-server` |
-| ArgoCD sync fails: `another operation is already in progress` | Transient — `terminate-op` is async and can race a following `sync`. The pipeline already retries this a few times. |
-| Rollout resources exist in git but never show up in `kubectl get rollout` / ArgoCD's tracked resources | Check `argocd/application.yaml`'s `include` glob for YAML folding bugs — an indented continuation line under `>-` preserves literal newlines instead of folding to spaces, silently corrupting the glob pattern. Use single-line flow strings instead: `include: "{a/*.yaml,b/*.yaml}"` |
-| Both a plain `Deployment` and a `Rollout` exist for `healing-app`, doubling pod count | `k8s/deployment.yaml` used to be tracked by ArgoCD alongside `argo-rollouts/rollout.yaml`. It's been removed — if you see this again, check `argocd/application.yaml`'s include pattern. |
-| Anomaly detector logs `501 Not Implemented` on every remediation attempt | It was calling the Argo Rollouts dashboard as if it were a REST API. Fixed by patching the Kubernetes API directly instead (see [How self-healing actually works](#how-self-healing-actually-works)). |
-| Rollout stuck forever in `Progressing` / `rollout is restarting`, pods never actually recycle | Check the PDB: `kubectl get pdb healing-app-pdb -n self-healing` — if `ALLOWED DISRUPTIONS` is permanently `0`, `minAvailable` is set equal to your replica count. Switch to `maxUnavailable: 1`. |
-| Grafana dashboard shows "No data" on every panel | Wrong Prometheus datasource — see [Import the Grafana dashboard](#import-the-grafana-dashboard) above. |
+| `git fetch`/`git pull` on the server fails with `Permission denied` | [→](TROUBLESHOOTING.md#issue-git-fetchgit-pull-fails-with-permission-denied-on-the-server) checkout owned by the wrong user |
+| ArgoCD sync fails: `invalid session: token has invalid claims: token is expired` | [→](TROUBLESHOOTING.md#issue-argocd-session-token-expires) use `ARGOCD_AUTH_TOKEN`, not a cached login session |
+| `argocd account generate-token` fails: `does not have apiKey capability` | [→](TROUBLESHOOTING.md#issue-account-admin-does-not-have-apikey-capability) |
+| ArgoCD sync fails: `another operation is already in progress` | [→](TROUBLESHOOTING.md#issue-another-operation-is-already-in-progress) transient, pipeline retries this |
+| Rollout/other resources exist in git but ArgoCD never tracks them | [→](TROUBLESHOOTING.md#issue-rollout--other-resources-exist-in-git-but-argocd-never-tracks-them) YAML folding bug in `include` |
+| Both a plain `Deployment` and a `Rollout` exist, doubling pod count | [→](TROUBLESHOOTING.md#issue-both-a-plain-deployment-and-a-rollout-exist-for-the-same-app) |
+| ArgoCD shows `OutOfSync` forever on a trivial field | [→](TROUBLESHOOTING.md#issue-argocd-shows-outofsync-forever-even-though-argocd-app-diff-shows-a-trivial-field) bool `omitempty` quirk |
+| Canary aborts with `reflect: slice index out of range` | [→](TROUBLESHOOTING.md#issue-canary-analysisrun-errors-with-reflect-slice-index-out-of-range) empty Prometheus result |
+| Anomaly detector logs `501 Not Implemented` on every remediation | [→](TROUBLESHOOTING.md#issue-anomaly-detector-logs-501-not-implemented-on-every-remediation-attempt) dashboard isn't a REST API |
+| Rollout stuck in `Progressing` / `rollout is restarting` forever | [→](TROUBLESHOOTING.md#issue-rollout-stuck-forever-in-progressing--rollout-is-restarting) PodDisruptionBudget math |
+| Pods churn continuously, never settling | [→](TROUBLESHOOTING.md#issue-pods-churn-continuously-never-reaching-steady-state) needs a remediation cooldown |
+| Grafana dashboard shows "No data" on every panel | [→](TROUBLESHOOTING.md#issue-grafana-dashboard-shows-no-data-on-every-panel) wrong Prometheus datasource |
+| The `kind` local path doesn't work | [→](TROUBLESHOOTING.md#issue-the-kind-based-local-deployment-never-actually-worked) |
