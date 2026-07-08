@@ -1,259 +1,187 @@
 # Cloud Deployment Guide
 
-This is what's actually running in production for this project: a single Azure VM running **k3s** (lightweight Kubernetes), with **ArgoCD** doing GitOps sync and **Argo Rollouts** running canary deployments — driven end-to-end by a **GitHub Actions** pipeline over SSH. No manual `kubectl apply` in normal operation; every push to `main` flows through automatically.
+## What's running
 
-For a lighter-weight local alternative that doesn't need a cloud VM (including a `kind`-based option that mirrors this same architecture), see [LOCAL-DEPLOY.md](LOCAL-DEPLOY.md).
+One Azure VM. On it:
+- **k3s** — a lightweight Kubernetes
+- **ArgoCD** — watches this GitHub repo and keeps the cluster in sync with it
+- **Argo Rollouts** — rolls out new versions gradually (canary), instead of all at once
+- **GitHub Actions** — builds the app, and tells ArgoCD to deploy it, every time you push to `main`
+
+You never run `kubectl apply` by hand day-to-day. Push to `main`, and everything else happens on its own.
+
+Don't have a cloud VM? See [LOCAL-DEPLOY.md](LOCAL-DEPLOY.md) instead — it can run entirely on your own machine.
 
 ---
 
-## Architecture
+## How a deploy actually happens
 
 ```
-GitHub push to main
-      │
-      ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ GitHub Actions (.github/workflows/deploy.yml)                        │
-│  1. Build & push healing-app + anomaly-detector images → GHCR        │
-│  2. Bump image tags in argo-rollouts/rollout.yaml + ml/deployment.yaml│
-│     and push that commit back to main                                │
-│  3. SSH to the VM → refresh git checkout → argocd app sync           │
-│  4. SSH to the VM → watch the canary rollout to completion           │
-└─────────────────────────────────────────────────────────────────────┘
-      │ (ArgoCD pulls directly from GitHub — SSH steps just trigger/watch it)
-      ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ Azure VM — single-node k3s cluster                                   │
-│                                                                        │
-│  ArgoCD (namespace argocd)                                            │
-│    └── watches this git repo, applies k8s/, argo-rollouts/,           │
-│        ml/deployment.yaml, monitoring/**                              │
-│                                                                        │
-│  namespace: self-healing                                              │
-│    ┌────────────┐   ┌──────────────┐   ┌─────────────────────────┐   │
-│    │ healing-app│──▶│  Prometheus  │──▶│  kube-prometheus-stack   │   │
-│    │ (Rollout,  │   │  (custom,    │   │  Grafana + Alertmanager  │   │
-│    │  canary)   │   │  scrapes via │   └─────────────────────────┘   │
-│    │            │   │  pod annota- │                                  │
-│    │            │   │  tions)      │                                  │
-│    └─────┬──────┘   └──────────────┘                                  │
-│          │                  ▲                                         │
-│          │                  │ queries                                 │
-│          ▼                  │                                         │
-│    ┌─────────────────────────────────┐                                │
-│    │  anomaly-detector                │                                │
-│    │  Isolation Forest model          │───▶ patches the Rollout        │
-│    │  scores metrics every 30s        │     directly via the           │
-│    │  decides: restart/abort/scale/   │     Kubernetes API             │
-│    │  rollback                        │     (not the Argo Rollouts     │
-│    └─────────────────────────────────┘     dashboard — see below)      │
-│                                                                        │
-│  Argo Rollouts controller — runs the canary steps, watches Analysis-  │
-│  Run results, honors spec.restartAt / status.abort from the detector  │
-└─────────────────────────────────────────────────────────────────────┘
+1. You push to main
+2. GitHub Actions builds the app image and pushes it to GitHub's registry
+3. GitHub Actions updates the deployment files with the new image, and pushes that
+4. GitHub Actions tells ArgoCD (on the server) to sync
+5. ArgoCD pulls the updated files from GitHub and applies them
+6. Argo Rollouts rolls out the new version gradually: 20% traffic → test → 50% → 100%
 ```
 
-**Two independent Prometheus instances exist on this cluster** — this trips people up, so it's worth calling out explicitly:
-- `prometheus` (this repo's own `monitoring/prometheus/prometheus.yaml`) — discovers `healing-app`/`anomaly-detector` pods via `prometheus.io/scrape` annotations. **This is the one with your actual app metrics** (`app_availability`, `http_requests_total`, `anomaly_detector_score`, etc.)
-- `kube-prometheus-stack-prometheus` (installed by Helm alongside Grafana) — only scrapes via ServiceMonitor/PodMonitor CRDs, which nothing here creates, so it has no visibility into the app at all.
-
-Grafana's default datasource points at the second one. If your dashboard shows "No data," this is almost certainly why — see [Import the Grafana dashboard](#import-the-grafana-dashboard) below.
-
 ---
 
-## How self-healing actually works
+## How self-healing works
 
-The anomaly detector (`ml/anomaly_detector.py`) runs a detection cycle every `SCRAPE_INTERVAL` (default 30s):
+A background process (the "anomaly detector") checks the app's health every 30 seconds. If something looks wrong, it picks one of these fixes automatically:
 
-1. Pulls `app_availability`, `http_requests_total` (error rate), `http_request_duration_seconds` (p99 latency), CPU/memory from Prometheus
-2. Scores the feature vector with an Isolation Forest model (trained online after `WARMUP_SAMPLES`, default 20 samples)
-3. If the anomaly score falls below `ANOMALY_THRESHOLD` (default `-0.15`), it picks a remediation based on severity:
-
-| Condition | Action |
+| How bad it is | What it does |
 |---|---|
-| `deployment_score < 30` | **Rollback** — reads the Rollout's `status.stableRS`, finds that ReplicaSet's pod template, patches it back into `spec.template` |
-| `error_rate > 0.30` | **Abort** — patches `status.abort: true` on the Rollout |
-| `p99_latency > 4.0s` | **Scale up** — patches `spec.replicas: 6` |
-| otherwise | **Restart** — patches `spec.restartAt` to now, triggering a rolling pod restart |
+| Very bad | Rolls back to the last known-good version |
+| High error rate | Stops the current rollout in its tracks |
+| Slow responses | Adds more replicas |
+| Anything else unusual | Restarts the unhealthy pods |
 
-All four actions patch the `Rollout` custom resource **directly via the Kubernetes API** (using a dedicated `anomaly-detector` ServiceAccount + Role scoped to `get/patch` on `rollouts` and read-only on `replicasets`) — not through the Argo Rollouts dashboard. The dashboard only serves its own gRPC-Web UI backend, not a plain REST API, so an earlier version of this code that called it directly always failed with `501 Not Implemented`.
+It does this by talking to Kubernetes directly — not through any dashboard or UI.
 
-A **300s cooldown** (`REMEDIATION_COOLDOWN` env var) prevents the detector from re-triggering a new action before the previous one has had time to actually complete — without it, a model that keeps flagging anomalies will re-patch `restartAt` every cycle and the rollout never stabilizes.
-
-**Known gotcha:** the `PodDisruptionBudget` (`k8s/service.yaml`) must allow at least one pod to be evicted at your current replica count — `minAvailable` equal to the replica count makes the disruption budget zero and permanently blocks restarts (this actually happened during initial testing; the fix was switching to `maxUnavailable: 1`).
+Full breakdown of the decision logic: see [README.md](README.md#how-it-works-end-to-end).
 
 ---
 
-## Part 1 — Provision the VM
+## One thing to know: two Prometheus installs
 
-Any Ubuntu 22.04 VM with at least 2 vCPU / 4GB RAM works. This was built and tested against **Azure**, but nothing here is Azure-specific beyond the IP address baked into a couple of files (see [Part 4](#part-4--point-the-scripts-at-your-server)).
+There are **two** separate Prometheus instances on this cluster:
 
-| Provider | Recommended Size |
-|---|---|
-| Azure | Standard_B2s |
-| AWS | t3.medium |
-| GCP | e2-medium |
-| DigitalOcean | Basic 4GB |
+1. `prometheus` — this project's own one. **This has your actual app data.**
+2. `kube-prometheus-stack-prometheus` — comes bundled with Grafana. Has no app data at all.
 
-**Open these inbound ports** in your VM's firewall/NSG:
-- **22** (SSH)
-- **30080** (ArgoCD UI, also used by the CI pipeline)
-- **30090** (the app, via NodePort)
-- **80** (if you want the Nginx Ingress canary traffic-split to work over plain HTTP)
-- Anything else you patch to NodePort later (e.g. **30030** for Grafana — see below)
+Grafana defaults to using #2, which is why dashboards often show "No data" the first time. Fix: [TROUBLESHOOTING.md](TROUBLESHOOTING.md#fix-grafana-shows-no-data-on-every-panel).
 
 ---
 
-## Part 2 — One-time server bootstrap
+## Step 1 — Get a server
 
-SSH into the VM (as a **non-root** user — see the note below on why this matters), clone the repo, and run the setup script:
+Any Ubuntu 22.04 VM, 2 vCPU / 4GB RAM or more. Built and tested on Azure, but any cloud works the same way.
+
+**Open these ports** on the VM's firewall:
+- `22` — SSH
+- `30080` — ArgoCD
+- `30090` — the app
+- `80` — optional, for plain HTTP traffic routing
+
+---
+
+## Step 2 — Run the setup script
+
+SSH in, then:
 
 ```bash
-ssh <your-user>@<your-server-ip>
 git clone https://github.com/code-and-secure/Self-Healing-Deployment-Engine.git
 cd Self-Healing-Deployment-Engine
 bash scripts/server-setup.sh https://github.com/code-and-secure/Self-Healing-Deployment-Engine
 ```
 
-This single script (`scripts/server-setup.sh`) does all of the following, in order:
-1. Installs **k3s** (Traefik disabled — Nginx Ingress is used instead, for canary traffic splitting)
-2. Installs **Helm**
-3. Installs **Nginx Ingress Controller**
-4. Installs **ArgoCD**, exposes it on NodePort `30080`, prints the initial admin password
-5. Installs **Argo Rollouts** + its dashboard + the `kubectl argo rollouts` CLI plugin
-6. Runs `scripts/install.sh` — installs `kube-prometheus-stack` (Prometheus + Grafana + Alertmanager) via Helm, applies Prometheus alert rules and Argo Rollouts AnalysisTemplates
-7. Installs the `argocd` CLI, enables the `apiKey` capability on the admin account (required — the built-in admin only has `login` capability by default), and generates a non-expiring API token
-8. Registers the ArgoCD `Application` manifests (`argocd/application.yaml`) so ArgoCD starts tracking this repo
+This one script installs everything: Kubernetes, ArgoCD, Argo Rollouts, monitoring, and it registers this repo with ArgoCD. Takes a few minutes. At the end it prints an ArgoCD API token — copy it, you'll need it in Step 3.
 
-**Important — always SSH in as the same non-root user afterward.** Everything here (the git checkout, `argocd` CLI config, RBAC) ends up owned by whichever user runs this script. If you later SSH in as `root` to do manual work, files can end up owned by `root`, and the CI pipeline (which connects as `SERVER_USER`) will start failing with permission errors on `git fetch`/`git pull`. If that happens: `sudo chown -R <ci-user>:<ci-user> ~/Self-Healing-Deployment-Engine`.
+**One rule to remember:** always SSH in as the same user going forward. If you switch to `root` and make changes, GitHub Actions will start failing to pull the latest code (permission errors). Fix if that happens: [TROUBLESHOOTING.md](TROUBLESHOOTING.md#fix-permission-denied-on-git-pull-on-the-server).
 
 ---
 
-## Part 3 — Set GitHub Secrets
+## Step 3 — Add 3 GitHub secrets
 
-The pipeline needs exactly three secrets (Settings → Secrets and variables → Actions):
+Go to your repo → **Settings → Secrets and variables → Actions**, and add:
 
-| Secret | Value |
+| Secret name | Value |
 |---|---|
-| `SERVER_USER` | the SSH username you used above |
-| `SERVER_SSH_KEY` | the private key matching that user's `authorized_keys` on the VM |
-| `ARGOCD_AUTH_TOKEN` | printed by `server-setup.sh` in Step 7 above |
+| `SERVER_USER` | the SSH username you used in Step 2 |
+| `SERVER_SSH_KEY` | your private SSH key for that server |
+| `ARGOCD_AUTH_TOKEN` | the token printed at the end of Step 2 |
 
-That's it — no `KUBECONFIG` secret. GitHub Actions never talks to the Kubernetes API directly; it SSHes to the VM and runs `argocd`/`kubectl` commands there.
+That's it — just these three. Nothing else is needed.
 
-If you ever need to regenerate the token (e.g. it was accidentally shared/leaked):
-```bash
-argocd account generate-token --account admin --insecure
-```
-then update the `ARGOCD_AUTH_TOKEN` secret with the new value.
+Token expired or need a new one? [TROUBLESHOOTING.md](TROUBLESHOOTING.md#fix-argocd-auth-token-expired).
 
 ---
 
-## Part 4 — Point the scripts at your server
+## Step 4 — Update the server IP
 
-`SERVER_IP` is currently hardcoded in a few places rather than parameterized:
-- `.github/workflows/deploy.yml` (`env.SERVER_IP`)
-- `scripts/server-setup.sh` (`SERVER_IP` variable)
-
-If you're deploying to your own server, update the IP in both places before pushing.
+Two files still have the IP hardcoded — update both if you're using your own server:
+- `.github/workflows/deploy.yml` (`SERVER_IP`)
+- `scripts/server-setup.sh` (`SERVER_IP`)
 
 ---
 
-## Part 5 — Push and watch it deploy
+## Step 5 — Push and watch
 
 ```bash
 git push origin main
 ```
 
-Watch the Actions tab — four jobs run in sequence:
-1. **Bootstrap Server (one-time)** — no-ops instantly on future runs once k3s+ArgoCD are detected as already installed
-2. **Build & Push Images** — builds and pushes both images to GHCR, tagged with the commit SHA
-3. **Update Image Tags in Manifests** — bumps the image tag in `argo-rollouts/rollout.yaml` and `ml/deployment.yaml`, commits, and pushes (with retry-on-conflict, since concurrent runs can race on this push)
-4. **Trigger ArgoCD Sync** — SSHes in, refreshes the server's git checkout, and syncs both ArgoCD Applications
-5. **Monitor Canary Rollout** — SSHes in and watches `kubectl argo rollouts status --watch` until the canary (20% → 50% → 100%, with a smoke-test gate) completes or fails
+Go to the **Actions** tab on GitHub and watch it run. It builds, deploys, and rolls out automatically.
 
 ---
 
-## Access
+## Where things live
 
-| Service | URL | Notes |
-|---|---|---|
-| App | `http://<server-ip>:30090` | |
-| ArgoCD | `https://<server-ip>:30080` | `admin` / password from Step 4 of `server-setup.sh` |
-| Argo Rollouts dashboard | `kubectl argo rollouts dashboard -n self-healing` (port 3100) | UI only — not a REST API (see architecture note above) |
-| Grafana | not exposed by default | see below |
-| Prometheus (custom) | not exposed by default | `kubectl port-forward -n self-healing svc/prometheus 9090:9090` |
+| What | Where |
+|---|---|
+| The app | `http://<server-ip>:30090` |
+| ArgoCD | `https://<server-ip>:30080` ( `admin` / password from Step 2) |
+| Grafana | not public by default — see below |
 
-### Expose Grafana (optional)
-Grafana isn't tracked by ArgoCD (it's Helm-managed, outside git), so this is a one-off `kubectl patch` rather than a committed manifest change:
+### Turn on Grafana access
 ```bash
 kubectl patch svc kube-prometheus-stack-grafana -n self-healing \
   -p '{"spec":{"type":"NodePort","ports":[{"port":80,"targetPort":3000,"nodePort":30030}]}}'
 ```
-Then open the port in your firewall/NSG and visit `http://<server-ip>:30030` (`admin`/`admin` — change this password after first login).
+Then visit `http://<server-ip>:30030` (`admin` / `admin` — change this password).
 
-### Import the Grafana dashboard
-Because of the two-Prometheus-instances issue explained above, the pre-provisioned dashboard ConfigMap (`monitoring/grafana/provisioning.yaml`) only contains a placeholder — it was never actually wired up to auto-load. Import it manually:
+### Load the dashboard
+The dashboard doesn't load automatically. Do this once:
 1. Grafana → **Connections** → **Data sources** → **Add data source** → **Prometheus**
-   URL: `http://prometheus.self-healing:9090` (the custom one, not the Helm one) → **Save & test**
-2. Under this new datasource's settings, toggle it **Default** (so the imported dashboard's panels, which don't specify a datasource per-panel, use it automatically)
-3. **Dashboards** → **New** → **Import** → upload `monitoring/grafana/dashboard.json` (or paste its contents)
+2. URL: `http://prometheus.self-healing:9090`
+3. **Save & test**, then toggle it **Default**
+4. **Dashboards** → **New** → **Import** → upload `monitoring/grafana/dashboard.json`
 
 ---
 
-## Test self-healing
+## Try out self-healing
+
+Open 4 terminals:
 
 ```bash
-# Terminal 1 — watch the rollout
+# 1 — watch the rollout
 kubectl argo rollouts get rollout healing-app -n self-healing --watch
 
-# Terminal 2 — watch the detector reason about it live
+# 2 — watch the detector's decisions
 kubectl logs -n self-healing -l app=anomaly-detector -f
 
-# Terminal 3 — inject a failure
+# 3 — turn on simulated errors
 bash scripts/inject-failure.sh enable 0.5
 
-# Terminal 4 — generate real traffic so the injected error rate actually
-# shows up in Prometheus (nothing calls the app otherwise)
+# 4 — send it real traffic (the error only shows up if requests happen)
 for i in $(seq 1 200); do
   curl -s -o /dev/null http://<server-ip>:30090/api/data
   curl -s -o /dev/null http://<server-ip>:30090/
   sleep 0.2
 done
 ```
-Turn it off: `bash scripts/inject-failure.sh disable`
 
----
-
-## Manual operations (outside the normal CI/CD path)
-
-These scripts talk to a `localhost:5000`-style registry and drive the Rollout directly — useful for ad hoc testing on a cluster you have direct `kubectl` access to (e.g. the `kind` local setup), but **not** what the GitHub Actions pipeline uses for the real deployment:
-
+Turn it back off:
 ```bash
-bash scripts/deploy.sh v2       # build, push, kubectl argo rollouts set image, watch
-bash scripts/rollback.sh        # interactive: kubectl argo rollouts undo, with confirmation prompt
+bash scripts/inject-failure.sh disable
 ```
 
-See [COMMANDS.md](COMMANDS.md) for the full command reference with what each one is actually for.
+---
+
+## Manual commands (skip the pipeline)
+
+For quick manual testing only — not what the real pipeline uses:
+```bash
+bash scripts/deploy.sh v2      # manually build + deploy a version
+bash scripts/rollback.sh       # manually roll back
+```
+
+Full list: [COMMANDS.md](COMMANDS.md)
 
 ---
 
-## Troubleshooting
+## Something broken?
 
-Quick-glance symptoms — see **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** for the full cause + fix + verification for each of these (plus how to get/reset the ArgoCD admin password):
-
-| Symptom | Details |
-|---|---|
-| `git fetch`/`git pull` on the server fails with `Permission denied` | [→](TROUBLESHOOTING.md#issue-git-fetchgit-pull-fails-with-permission-denied-on-the-server) checkout owned by the wrong user |
-| ArgoCD sync fails: `invalid session: token has invalid claims: token is expired` | [→](TROUBLESHOOTING.md#issue-argocd-session-token-expires) use `ARGOCD_AUTH_TOKEN`, not a cached login session |
-| `argocd account generate-token` fails: `does not have apiKey capability` | [→](TROUBLESHOOTING.md#issue-account-admin-does-not-have-apikey-capability) |
-| ArgoCD sync fails: `another operation is already in progress` | [→](TROUBLESHOOTING.md#issue-another-operation-is-already-in-progress) transient, pipeline retries this |
-| Rollout/other resources exist in git but ArgoCD never tracks them | [→](TROUBLESHOOTING.md#issue-rollout--other-resources-exist-in-git-but-argocd-never-tracks-them) YAML folding bug in `include` |
-| Both a plain `Deployment` and a `Rollout` exist, doubling pod count | [→](TROUBLESHOOTING.md#issue-both-a-plain-deployment-and-a-rollout-exist-for-the-same-app) |
-| ArgoCD shows `OutOfSync` forever on a trivial field | [→](TROUBLESHOOTING.md#issue-argocd-shows-outofsync-forever-even-though-argocd-app-diff-shows-a-trivial-field) bool `omitempty` quirk |
-| Canary aborts with `reflect: slice index out of range` | [→](TROUBLESHOOTING.md#issue-canary-analysisrun-errors-with-reflect-slice-index-out-of-range) empty Prometheus result |
-| Anomaly detector logs `501 Not Implemented` on every remediation | [→](TROUBLESHOOTING.md#issue-anomaly-detector-logs-501-not-implemented-on-every-remediation-attempt) dashboard isn't a REST API |
-| Rollout stuck in `Progressing` / `rollout is restarting` forever | [→](TROUBLESHOOTING.md#issue-rollout-stuck-forever-in-progressing--rollout-is-restarting) PodDisruptionBudget math |
-| Pods churn continuously, never settling | [→](TROUBLESHOOTING.md#issue-pods-churn-continuously-never-reaching-steady-state) needs a remediation cooldown |
-| Grafana dashboard shows "No data" on every panel | [→](TROUBLESHOOTING.md#issue-grafana-dashboard-shows-no-data-on-every-panel) wrong Prometheus datasource |
-| The `kind` local path doesn't work | [→](TROUBLESHOOTING.md#issue-the-kind-based-local-deployment-never-actually-worked) |
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — copy-paste fixes for every issue hit while building this, including password resets and expired-token fixes.
