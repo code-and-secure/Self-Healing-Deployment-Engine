@@ -1,37 +1,75 @@
 # Self-Healing Deployment Engine
 
-Automatically detects unhealthy deployments and recovers without human intervention.
+## What this is
+
+A deployment pipeline that detects when a release is unhealthy and fixes it **without a human in the loop**. It's built as a learning project covering four layers that build on each other:
+
+1. **Health checks** — liveness/readiness/startup probes so Kubernetes itself knows when a pod is broken
+2. **Observability** — Prometheus metrics + Grafana dashboards, so the state of the system is actually visible
+3. **Progressive delivery** — Argo Rollouts canary deployments (traffic shifts gradually: 20% → 50% → 100%, with a smoke-test gate), so a bad release only ever affects a fraction of traffic
+4. **ML-based auto-remediation** — an anomaly detector (Isolation Forest) watches the same Prometheus metrics, scores the deployment's health, and — when something looks wrong — **acts on its own**: restarts pods, aborts an in-progress canary, scales up under latency pressure, or rolls back to the last known-good revision
+
+The interesting part isn't any one of these pieces individually — it's that layer 4 closes the loop. Most "self-healing" demos stop at Kubernetes restarting a crashed container. This one has a model deciding *which* of several remediation strategies fits the specific failure it's seeing, and driving that decision through the Kubernetes API itself.
+
+## How it works, end to end
 
 ```
-Deploy → Health Check → Prometheus Metrics → Argo Rollouts → Rollback
+Push to main
+     │
+     ▼
+GitHub Actions builds + pushes images, bumps image tags in the manifests,
+triggers an ArgoCD sync, then watches the canary rollout
+     │
+     ▼
+ArgoCD (GitOps) — pulls this repo directly, applies everything to the cluster
+     │
+     ▼
+Argo Rollouts — runs the canary: 20% traffic → smoke test → 50% → 100%
+     │
+     ▼
+The anomaly detector, in parallel, continuously:
+  1. queries Prometheus for error rate / p99 latency / availability / CPU / memory
+  2. scores that vector with an Isolation Forest model
+  3. if anomalous, picks a remediation and patches the Rollout's Kubernetes
+     object directly — restart (spec.restartAt), abort (status.abort),
+     scale (spec.replicas), or rollback (spec.template ← last stable RS)
 ```
+
+Two deployment targets are supported:
+- **[CLOUD-DEPLOY.md](CLOUD-DEPLOY.md)** — the real thing: a cloud VM running k3s + ArgoCD + Argo Rollouts, driven by the GitHub Actions pipeline above. This is what's actually deployed and tested.
+- **[LOCAL-DEPLOY.md](LOCAL-DEPLOY.md)** — run it on your own machine, either via Docker Compose (app + monitoring only, no canary/remediation) or `kind` (mirrors the cloud architecture exactly, no cloud VM needed).
+
+For the day-to-day commands you'll actually use once it's running, see **[COMMANDS.md](COMMANDS.md)**.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  Kubernetes Cluster (namespace: self-healing)                    │
-│                                                                  │
-│  ┌──────────────┐    ┌──────────────┐    ┌───────────────────┐  │
-│  │  healing-app │───▶│  Prometheus  │───▶│  AlertManager     │  │
-│  │  (Flask)     │    │  + Rules     │    │  → Slack          │  │
-│  │              │    └──────────────┘    └───────────────────┘  │
-│  │  /healthz    │           │                                    │
-│  │  /readyz     │           ▼                                    │
-│  │  /metrics    │    ┌──────────────┐    ┌───────────────────┐  │
-│  └──────────────┘    │  Anomaly     │───▶│  Argo Rollouts    │  │
-│         ▲            │  Detector    │    │  (Canary +        │  │
-│         │            │  (ML/IsoFor) │    │   Auto-Rollback)  │  │
-│         └────────────│              │    └───────────────────┘  │
-│                      └──────────────┘                           │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  Grafana Dashboard  (deployment score, error rate, P99)  │   │
-│  └──────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────┐
+│  Kubernetes namespace: self-healing                                    │
+│                                                                          │
+│  ┌──────────────┐        ┌───────────────┐                             │
+│  │  healing-app │───────▶│  Prometheus   │  (custom — scrapes via      │
+│  │  (Argo       │        │               │   prometheus.io/scrape     │
+│  │   Rollout,   │        └───────┬───────┘   pod annotations)          │
+│  │   canary)    │                │                                     │
+│  │  /healthz    │                ▼                                     │
+│  │  /readyz     │        ┌───────────────┐        ┌──────────────────┐ │
+│  │  /metrics    │        │  Anomaly      │───────▶│  Argo Rollouts   │ │
+│  └──────▲───────┘        │  Detector     │ patches│  controller      │ │
+│         │                │  (Isolation   │ via k8s│  (canary steps,  │ │
+│         └────────────────│   Forest)     │  API   │   restart/abort/ │ │
+│                           └───────────────┘        │   scale/rollback)│ │
+│                                                     └──────────────────┘ │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │  Grafana (kube-prometheus-stack) — deployment score, error rate,  │   │
+│  │  P99 latency, anomaly score, pod count, remediation actions       │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+└───────────────────────────────────────────────────────────────────────┘
 ```
+
+**Note on Prometheus:** there are two independent instances in the cloud/kind setup — the custom one above (which has your actual app metrics) and `kube-prometheus-stack-prometheus` (bundled with Grafana via Helm, which only scrapes standard cluster metrics). Grafana defaults to the wrong one; see the [Grafana dashboard setup](CLOUD-DEPLOY.md#import-the-grafana-dashboard) in CLOUD-DEPLOY.md.
 
 ---
 
@@ -39,160 +77,69 @@ Deploy → Health Check → Prometheus Metrics → Argo Rollouts → Rollback
 
 ```
 .
-├── app/                        # Flask application
-│   ├── main.py                 # App + /healthz /readyz /metrics endpoints
+├── app/                         # Flask application under test
+│   ├── main.py                  # /healthz /readyz /metrics + /admin/inject-failure
 │   ├── requirements.txt
 │   └── Dockerfile
-├── k8s/                        # Phase 1 — Kubernetes
+├── k8s/                         # Base Kubernetes resources
 │   ├── namespace.yaml
-│   ├── deployment.yaml         # Liveness, readiness, startup probes
-│   ├── service.yaml            # Service + PodDisruptionBudget
-│   └── hpa.yaml                # HorizontalPodAutoscaler
-├── monitoring/                 # Phase 2 — Observability
-│   ├── prometheus/
-│   │   ├── prometheus.yaml     # Prometheus deployment + RBAC
-│   │   └── rules/
-│   │       └── alerts.yaml     # Error rate / latency / availability rules
-│   └── grafana/
-│       ├── dashboard.json      # Grafana dashboard (import manually)
-│       └── provisioning.yaml   # Auto-provision via ConfigMap sidecar
-├── argo-rollouts/              # Phase 3 — Progressive delivery
-│   ├── rollout.yaml            # 5%→20%→50%→80%→100% canary + auto-rollback
-│   └── analysis-template.yaml # Prometheus gates + smoke-test job
-├── alertmanager/               # Phase 4 — Slack alerts
-│   └── alertmanager.yaml       # Critical / warning routing to Slack channels
-├── ml/                         # Advanced — ML anomaly detection
-│   ├── anomaly_detector.py     # Isolation Forest + auto-remediation
+│   ├── service.yaml             # Service + NodePort + PodDisruptionBudget
+│   └── hpa.yaml                 # HorizontalPodAutoscaler (targets the Rollout)
+├── argo-rollouts/               # Canary progressive delivery
+│   ├── rollout.yaml             # The Rollout itself: 20%→50%→100% + smoke test
+│   └── analysis-template.yaml   # Smoke-test AnalysisTemplate
+├── ml/                          # ML-based anomaly detection + auto-remediation
+│   ├── anomaly_detector.py      # Isolation Forest + Kubernetes-API remediation
 │   ├── requirements.txt
 │   ├── Dockerfile
-│   └── deployment.yaml
-├── compose/                    # Docker Compose config and tooling
-│   ├── prometheus.yml          # Prometheus scrape config
-│   ├── alerts.yml              # Alert rules
-│   ├── alertmanager.yml        # AlertManager routing
-│   ├── grafana-datasource.yml
-│   ├── grafana-dashboard-provider.yml
-│   └── generate-traffic.sh    # Live traffic generator with dashboard status
+│   └── deployment.yaml          # Deployment + dedicated ServiceAccount/Role/RoleBinding
+├── monitoring/                  # Observability
+│   ├── prometheus/
+│   │   ├── prometheus.yaml      # Custom Prometheus — the one with real app metrics
+│   │   └── rules/alerts.yaml    # Error rate / latency / availability alert rules
+│   └── grafana/
+│       ├── dashboard.json       # Import manually — see CLOUD-DEPLOY.md
+│       └── provisioning.yaml    # Placeholder ConfigMap (auto-provisioning isn't wired up)
+├── argocd/
+│   └── application.yaml         # ArgoCD Application manifests (GitOps source of truth)
+├── compose/                     # Local deployment tooling — see LOCAL-DEPLOY.md
+│   ├── prometheus.yml, alerts.yml, alertmanager.yml, grafana-*.yml   # Docker Compose stack
+│   ├── generate-traffic.sh      # Traffic generator with a live status line
+│   ├── kind-cluster.yaml        # kind cluster config (mirrors cloud architecture)
+│   └── setup-kind.sh            # One-shot local Kubernetes setup via kind
+├── docker-compose.yml
 └── scripts/
-    ├── install.sh              # Install all dependencies (Helm, Argo Rollouts)
-    ├── deploy.sh               # Build → push → canary deploy
-    ├── rollback.sh             # Manual rollback
-    └── inject-failure.sh       # Inject failures to test self-healing
-```
-
----
-
-## Quick Start
-
-> **Docker Compose (no Kubernetes needed):** see [DOCKER-DEPLOY.md](DOCKER-DEPLOY.md)
-> **Cloud VM from scratch:** see [CLOUD-DEPLOY.md](CLOUD-DEPLOY.md)
-
-### Prerequisites (Kubernetes path)
-- Kubernetes cluster (kind / minikube / EKS / GKE)
-- `kubectl`, `helm`, `docker`
-
-### 1. Install all components
-
-```bash
-bash scripts/install.sh
-```
-
-### 2. Build and deploy the app
-
-```bash
-# Build image
-docker build -t localhost:5000/healing-app:1.0.0 app/
-docker push localhost:5000/healing-app:1.0.0
-
-# Apply Phase 1 manifests
-kubectl apply -f k8s/
-
-# Deploy via Argo Rollout (Phase 3)
-kubectl apply -f argo-rollouts/
-```
-
-### 3. Deploy the ML anomaly detector
-
-```bash
-docker build -t localhost:5000/anomaly-detector:1.0.0 ml/
-docker push localhost:5000/anomaly-detector:1.0.0
-kubectl apply -f ml/deployment.yaml
-```
-
-### 4. Import the Grafana dashboard
-
-```bash
-# Port-forward Grafana
-kubectl port-forward -n self-healing svc/kube-prometheus-stack-grafana 3000:80
-
-# Then import monitoring/grafana/dashboard.json via the Grafana UI
-# Dashboards → Import → Upload JSON file
-```
-
-### 5. Configure Slack alerts
-
-Edit `alertmanager/alertmanager.yaml` and replace:
-```yaml
-slack_webhook_url: "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK"
-```
-Then apply: `kubectl apply -f alertmanager/alertmanager.yaml`
-
----
-
-## Testing Self-Healing
-
-### Inject failures
-
-```bash
-# Inject 50% error rate
-bash scripts/inject-failure.sh enable 0.5
-
-# Watch Argo Rollouts react
-kubectl argo rollouts get rollout healing-app -n self-healing --watch
-
-# Disable failures
-bash scripts/inject-failure.sh disable
-```
-
-### Deploy a bad version
-
-```bash
-# Deploy v2 — canary will gate at 5% and roll back automatically if error rate >20%
-bash scripts/deploy.sh v2
-```
-
-### Manual rollback
-
-```bash
-bash scripts/rollback.sh
+    ├── server-setup.sh          # One-time cloud VM bootstrap (k3s, ArgoCD, Argo Rollouts, monitoring)
+    ├── install.sh               # Installs Prometheus/Grafana + alert rules + AnalysisTemplates
+    ├── inject-failure.sh        # Toggle simulated failures for testing self-healing
+    ├── deploy.sh                # Manual build+push+deploy (bypasses the GitOps pipeline)
+    └── rollback.sh              # Manual interactive rollback
 ```
 
 ---
 
 ## Key Metrics
 
-| Metric | Warning | Critical |
-|--------|---------|----------|
-| Error Rate | >5% | >20% |
-| P99 Latency | >1s | >5s |
-| Availability | — | <100% for 1m |
-| Anomaly Score | — | <-0.15 |
+| Metric | Warning | Critical | Drives |
+|--------|---------|----------|--------|
+| Error Rate | >5% | >20% | Prometheus alert, and the detector's "abort" threshold at >30% |
+| P99 Latency | >1s | >5s | Prometheus alert, and the detector's "scale up" threshold at >4s |
+| Availability | — | <100% for 1m | Prometheus alert |
+| Anomaly Score | — | <-0.15 | The detector's trigger threshold — below this, a remediation fires |
+| Deployment Score | — | <30 | The detector's "full rollback" threshold (0-100 composite score) |
 
 ---
 
-## Self-Healing Flow
+## Testing self-healing
 
+```bash
+bash scripts/inject-failure.sh enable 0.5
+kubectl argo rollouts get rollout healing-app -n self-healing --watch
+kubectl logs -n self-healing -l app=anomaly-detector -f
 ```
-1. New version deployed via Argo Rollouts (canary: 5%)
-2. AnalysisTemplate queries Prometheus every 30 s
-3. If error_rate >= 20% OR p99 >= 5s → AnalysisRun FAILED
-4. Argo Rollouts automatically aborts canary and reverts to stable
-5. AlertManager sends Slack notification
-6. ML Anomaly Detector (runs in parallel):
-   - Isolation Forest scores current metric vector
-   - Score < -0.15 → anomaly
-   - deployment_score < 30 → full rollback
-   - high error rate → abort active rollout
-   - high latency → scale up
-   - otherwise → restart unhealthy pods
+
+Injecting the failure alone does nothing without traffic hitting the app — see [CLOUD-DEPLOY.md](CLOUD-DEPLOY.md#test-self-healing) or [LOCAL-DEPLOY.md](LOCAL-DEPLOY.md) for the full walkthrough including how to generate that traffic.
+
+```bash
+bash scripts/inject-failure.sh disable
 ```

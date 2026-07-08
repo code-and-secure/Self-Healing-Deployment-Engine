@@ -74,8 +74,7 @@ log "ArgoCD URL:      https://${SERVER_IP}:30080"
 log "ArgoCD user:     admin"
 log "ArgoCD password: ${ARGOCD_PASSWORD}"
 echo ""
-warn "SAVE THIS PASSWORD — add it as GitHub secret ARGOCD_PASSWORD"
-warn "GitHub secret ARGOCD_SERVER = ${SERVER_IP}:30080"
+warn "SAVE THIS PASSWORD — you'll need it in Step 7 to generate the CI token"
 echo ""
 
 # ── Step 5: Install Argo Rollouts + dashboard ────────────────────────────────
@@ -97,7 +96,7 @@ fi
 log "Argo Rollouts ready"
 
 # ── Step 6: Run existing install.sh to set up Prometheus/Grafana/app stack ───
-log "==> [6/8] Installing Prometheus, Grafana, Alertmanager, app manifests..."
+log "==> [6/8] Installing Prometheus, Grafana, app manifests..."
 bash "$(dirname "$0")/install.sh"
 
 # ── Step 7: Create ArgoCD API token for GitHub Actions ──────────────────────
@@ -108,6 +107,13 @@ if ! command -v argocd &>/dev/null; then
     https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
   sudo chmod +x /usr/local/bin/argocd
 fi
+
+# The built-in admin account only has "login" capability by default —
+# "apiKey" must be enabled before generate-token will work.
+kubectl -n argocd patch configmap argocd-cm --type merge \
+  -p '{"data":{"accounts.admin":"apiKey,login"}}'
+kubectl -n argocd rollout restart deployment argocd-server
+kubectl -n argocd rollout status deployment argocd-server --timeout=120s
 
 # Login and create a token
 argocd login "${SERVER_IP}:30080" \
@@ -144,14 +150,11 @@ log "Grafana:              kubectl port-forward svc/kube-prometheus-stack-grafan
 log "Prometheus:           kubectl port-forward svc/kube-prometheus-stack-prometheus 9090:9090 -n ${NAMESPACE}"
 log "Argo Rollouts UI:     kubectl argo rollouts dashboard -n ${NAMESPACE}"
 log ""
-log "GitHub Secrets to set (Settings > Secrets > Actions):"
-log "  ARGOCD_SERVER   = ${SERVER_IP}:30080"
-log "  ARGOCD_PASSWORD = ${ARGOCD_PASSWORD}"
-log "  ARGOCD_TOKEN    = (shown above)"
+log "GitHub Secrets to set (Settings > Secrets and variables > Actions):"
+log "  SERVER_USER      = the SSH username you used to connect to this VM"
+log "  SERVER_SSH_KEY   = the private key that matches this VM's authorized_keys"
+log "  ARGOCD_AUTH_TOKEN = ${ARGOCD_TOKEN:-<see warning above — generate manually if empty>}"
 log ""
-log "  KUBECONFIG_B64  = (copy the line below — it is the base64 kubeconfig"
-log "                     with external IP so GitHub Actions can reach k3s)"
-# Generate a remote kubeconfig pointing to the external IP for GitHub Actions
-sed "s|127.0.0.1|${SERVER_IP}|g" "$HOME/.kube/config" | base64 -w0
-echo ""
+log "The pipeline drives everything over SSH + the ArgoCD CLI on this box —"
+log "it does not need a kubeconfig secret."
 log "================================================================"

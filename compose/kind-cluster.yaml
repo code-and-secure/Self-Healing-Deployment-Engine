@@ -10,10 +10,10 @@ nodes:
           kubeletExtraArgs:
             node-labels: "ingress-ready=true"
     extraPortMappings:
-      - containerPort: 30080   # healing-app NodePort
+      - containerPort: 30090   # healing-app NodePort (k8s/service.yaml)
         hostPort: 8080
         protocol: TCP
-      - containerPort: 30090   # Prometheus NodePort
+      - containerPort: 30091   # Prometheus NodePort
         hostPort: 9090
         protocol: TCP
       - containerPort: 30000   # Grafana NodePort

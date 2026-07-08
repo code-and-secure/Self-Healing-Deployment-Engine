@@ -17,7 +17,7 @@ log "Creating kind cluster 'self-healing'..."
 if kind get clusters | grep -q "^self-healing$"; then
   echo "  Cluster already exists — skipping creation"
 else
-  kind create cluster --config local/kind-cluster.yaml --wait 2m
+  kind create cluster --config compose/kind-cluster.yaml --wait 2m
 fi
 kubectl cluster-info --context kind-self-healing
 
@@ -46,7 +46,7 @@ helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheu
   --set grafana.service.type=NodePort \
   --set grafana.service.nodePort=30000 \
   --set prometheus.service.type=NodePort \
-  --set prometheus.service.nodePort=30090 \
+  --set prometheus.service.nodePort=30091 \
   --set prometheus.prometheusSpec.retention=2d \
   --set alertmanager.alertmanagerSpec.retention=24h \
   --wait --timeout 5m
@@ -58,7 +58,7 @@ kubectl apply -n argo-rollouts \
   -f https://github.com/argoproj/argo-rollouts/releases/download/v1.7.2/install.yaml
 kubectl -n argo-rollouts rollout status deployment/argo-rollouts --timeout=3m
 
-# ── 7. Apply all manifests ────────────────────────────────────────────────
+# ── 7. Apply all manifests (swapping in the locally-built images) ────────
 log "Applying Prometheus alert rules..."
 kubectl apply -f monitoring/prometheus/rules/alerts.yaml
 
@@ -66,10 +66,12 @@ log "Applying Argo Rollouts AnalysisTemplates..."
 kubectl apply -f argo-rollouts/analysis-template.yaml
 
 log "Deploying application via Argo Rollout..."
-kubectl apply -f argo-rollouts/rollout.yaml
+sed "s|image: ghcr.io/.*healing-app.*|image: healing-app:1.0.0|" argo-rollouts/rollout.yaml \
+  | kubectl apply -f -
 
 log "Deploying anomaly detector..."
-kubectl apply -f ml/deployment.yaml
+sed "s|image: ghcr.io/.*anomaly-detector.*|image: anomaly-detector:1.0.0|" ml/deployment.yaml \
+  | kubectl apply -f -
 
 # ── 8. Wait for pods ──────────────────────────────────────────────────────
 log "Waiting for pods to be ready..."

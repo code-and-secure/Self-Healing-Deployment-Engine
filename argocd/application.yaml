@@ -64,7 +64,7 @@ spec:
     path: .
     directory:
       recurse: true
-      include: "{monitoring/**/*.yaml,alertmanager/alertmanager.yaml}"
+      include: "{monitoring/**/*.yaml}"
 
   destination:
     server: https://kubernetes.default.svc

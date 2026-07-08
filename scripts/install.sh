@@ -41,13 +41,11 @@ helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheu
   --set alertmanager.enabled=true \
   --wait --timeout 5m
 
-# ── Custom Prometheus rules and AlertManager ──────────────────────────────
+# ── Custom Prometheus rules ────────────────────────────────────────────────
+# Alerting is handled by kube-prometheus-stack's bundled Alertmanager
+# (--set alertmanager.enabled=true above) rather than a separate instance.
 log "Applying Prometheus alert rules..."
 kubectl apply -f monitoring/prometheus/rules/alerts.yaml
-
-log "Applying AlertManager config..."
-log "  NOTE: Update alertmanager/alertmanager.yaml with your Slack webhook before applying"
-kubectl apply -f alertmanager/alertmanager.yaml
 
 # ── Argo Rollouts resources ────────────────────────────────────────────────
 log "Applying Argo Rollouts AnalysisTemplates..."

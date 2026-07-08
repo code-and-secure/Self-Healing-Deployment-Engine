@@ -15,7 +15,7 @@ data:
     alerting:
       alertmanagers:
         - static_configs:
-            - targets: ["alertmanager:9093"]
+            - targets: ["kube-prometheus-stack-alertmanager:9093"]
 
     rule_files:
       - /etc/prometheus/rules/*.yaml
